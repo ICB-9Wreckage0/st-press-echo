@@ -488,7 +488,7 @@ function simPersonPage(st) {
         ${f.since ? ` · 约 ${h(f.since)} 起开始留意这个署名` : ''}
         <div class="pe-muted">${f.hist.slice().sort((a, b) => cmp(a.date, b.date)).map(x => `${h(x.date)} 读${bt(byId(st.works, x.workId)?.title || '')}${x.delta >= 0 ? '+' : ''}${x.delta}`).join(' → ')}</div>
         <div class="pe-muted">印象 ≥ 1 时，此后的新作会经“追读”渠道读到；只看他当时已有的印象，以后的看法不会倒过来影响以前。他是否知道这个笔名背后是谁另算（“知道笔名身份”），对一个笔名的印象也不会转到另一个笔名上。</div></div>`).join('')}` : ''}
-    ${relationsOf(st, p).length ? `<h5>熟人 <small class="pe-muted">读到东西可能谈起的对象</small></h5><div class="pe-era-chips pe-era-chips-wrap">${relationsOf(st, p).map(r => { const q = byId(st.persons, r.to); return q ? `<span class="pe-chip">${personTag(q)} ${h(REL_TYPES[r.type] || '')} · ${h(REL_FREQ[r.frequency] || '')}${r.implicit ? '（同刊同事）' : ''}${r.discloseIdentity ? ' · 可能说出身份' : ''}</span>` : ''; }).join('')}</div>` : ''}
+    ${relationsOf(st, p).length ? `<h5>熟人 <small class="pe-muted">读到东西可能谈起的对象</small></h5><div class="pe-era-chips pe-era-chips-wrap">${relationsOf(st, p).map(r => { const q = byId(st.persons, r.to); return q ? `<span class="pe-chip">${personTag(q)} ${h(REL_TYPES[r.type] || '')} · ${h(REL_FREQ[r.frequency] || '')}${r.implicit ? '（同刊同事）' : ''}${r.since ? ` · ${h(r.since)} 起` : ''}${r.until ? ` · 至 ${h(r.until)}` : ''}${r.discloseIdentity ? ' · 可能说出身份' : ''}</span>` : ''; }).join('')}</div>` : ''}
     <h5>和各部作品的关系（截至 ${h(st.currentDate || '')}）</h5>
     ${works.map(w => { const rc = recOf(w); const future = rc?.readDate && st.currentDate && rc.readDate > st.currentDate; const o = odds[w.id];
       return `<div class="pe-card pe-card-slim pe-colored" style="--c:${penColor(st, w.pennameId) || 'var(--pe-border)'}"><div class="pe-card-main">
@@ -704,6 +704,8 @@ function relRow(st, self, r = {}) {
       <select data-r="trust" class="text_pole" title="对这个人的信任">${opt(TRUST, tr)}</select>
       <label title="会不会跟他谈起读过的东西、自己的看法"><input type="checkbox" data-r="discloseOpinions" ${r.discloseOpinions === false ? '' : 'checked'}> 谈看法</label>
       <label title="自己知道笔名背后是谁时，肯不肯告诉他"><input type="checkbox" data-r="discloseIdentity" ${r.discloseIdentity ? 'checked' : ''}> 可能说出作者身份</label>
+      <input type="text" data-r="since" class="text_pole" value="${h(r.since || '')}" placeholder="从（可空）" title="关系从哪天开始，例如搬来同住、初次结识" style="width:7.5em">
+      <input type="text" data-r="until" class="text_pole" value="${h(r.until || '')}" placeholder="到（可空）" title="哪天起断了往来" style="width:7.5em">
       <button class="menu_button pe-mini" data-act="rel-del" title="删除">✕</button></div>`;
 }
 function relationsEditor(obj, st) {
@@ -716,7 +718,7 @@ function relationsEditor(obj, st) {
 function readRelations(root) {
     return [...root.querySelectorAll('.pe-rel-row')].map(row => {
         const g = k => row.querySelector(`[data-r="${k}"]`);
-        return { to: g('to').value, type: g('type').value, closeness: +g('closeness').value, frequency: g('frequency').value, trust: +g('trust').value, discloseOpinions: g('discloseOpinions').checked, discloseIdentity: g('discloseIdentity').checked };
+        return { to: g('to').value, type: g('type').value, closeness: +g('closeness').value, frequency: g('frequency').value, trust: +g('trust').value, discloseOpinions: g('discloseOpinions').checked, discloseIdentity: g('discloseIdentity').checked, since: normalizeISO(g('since').value) || '', until: normalizeISO(g('until').value) || '' };
     }).filter(r => r.to);
 }
 

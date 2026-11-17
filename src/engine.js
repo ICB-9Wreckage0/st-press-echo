@@ -505,6 +505,11 @@ function runPipeline(state, s, era, work, person, seed, report, opts = {}) {
     if (rec.read === 'skimmed' || rec.read === 'finished') {
         const read = { read: rec.read, readDate: rec.readDate, interest: rec.interest ?? interestOf(person, workTags(state, work)) };
         const op = opinionStage(state, work, person, read, seed);
+        if (rec.known && rec.known.polarity != null) {
+            op.polarity = rec.known.polarity;
+            if (op.strength === 'none') op.strength = 'mild';
+            op.why = [`已知他的态度（${rec.known.source || '记录'}）：${['偏批评', '褒贬参半', '偏肯定'][op.polarity + 1]}，${STRENGTH[op.strength]}`];
+        }
         rec.polarity = op.polarity; rec.strength = op.strength; rec.why.push(...op.why);
         const ex = expressionStage(state, s, era, work, person, read, op, seed + (via ? '|via' : ''), via);
         rec.expression = ex.expression; rec.why.push(...ex.why);
@@ -579,6 +584,7 @@ function talkStage(state, s, era, work, person, rec, seed, report) {
     const told = [];
     for (const rel of relationsOf(state, person)) {
         if (rel.discloseOpinions === false) continue;
+        if ((rel.since && cmp(rec.readDate, rel.since) < 0) || (rel.until && cmp(rec.readDate, rel.until) > 0)) continue; // 那时还没认识 / 已经断了往来
         const q = byId(state.persons, rel.to);
         if (!q || q.active === false) continue;
         const freq = rel.frequency || 'monthly';
@@ -806,7 +812,7 @@ function pushAggregate(state, report, { key, layer, date, outletId, work, count,
 }
 
 /** 根据书信等线索手动记录“某人某日读过某作品”，并从这里继续推演看法与表达 */
-export function recordManualReading(state, settings, era, { workId, personId, date, read = 'finished', note = '' }) {
+export function recordManualReading(state, settings, era, { workId, personId, date, read = 'finished', note = '', known = null }) {
     useConcepts(state.concepts);
     const work = byId(state.works, workId);
     const person = byId(state.persons, personId);
@@ -821,6 +827,7 @@ export function recordManualReading(state, settings, era, { workId, personId, da
         id: uid('rc'), key: `${workId}|${personId}|manual`, origin: 'manual', workId, personId, channel: 'manual',
         contactDate: normalizeISO(date), read, readDate: normalizeISO(date), why: [`手动记录：${note || '来自书信或剧情'}`], eventIds: [], opinion: null,
         interest: interestOf(person, workTags(state, work)),
+        known: known || null, // 已知他的态度（例如他写过的书评）：看法按这个定，不再随机
     };
     const report = { scheduled: 0, receptions: 0 };
     state.rolls[`${workId}|${personId}`] = { manual: true };

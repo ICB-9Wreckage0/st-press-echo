@@ -26,7 +26,7 @@ export const FORMAT_SPEC = `{
   "pennames": [{ "name": "笔名", "owner": "真实作者", "publicIdentityKnown": false, "knownBy": ["知道这个笔名是谁的人"] }],
   "outlets": [{ "name": "刊物名（用中文常用译名，全文统一）", "originalName": "原文名", "periodicity": "daily", "weekday": null, "monthDays": [], "circle": "general", "tier": 3, "politics": ["政治/宗教倾向"], "real": true, "note": "" }],
   "persons": [{ "name": "姓名（全文统一用一个写法）", "aliases": ["别名"], "roles": ["critic"], "outlets": ["供稿的刊物名"], "reads": ["常读的刊物名"], "interests": ["关注题材"], "likes": ["欣赏"], "dislikes": ["反感"], "closeness": 0, "knowsIdentity": false, "real": true, "monthlyCapacity": 2, "columnWeekday": null, "notes": "与主角的关系、往来",
-      "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false }] }],
+      "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
   "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字" }],
   "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
@@ -42,7 +42,7 @@ export const FORMAT_RULES = `字段取值：
 - tier（影响力）：1–5，5 最大
 - roles（公开身份，可多选）：${enumLine(ROLES)}；只是朋友、从不公开写评论的人填 []
 - closeness（与主角私交）：0 陌生，1 认识，2 朋友，3 至交
-- relations（此人与其他人物的关系，有方向：写在 A 下面的是“A 对 B”）：type=${enumLine(REL_TYPES)}；closeness 同上 0–3；frequency=${enumLine(REL_FREQ)}；trust 0–1（A 对 B 的信任）；discloseOpinions：A 会不会跟 B 谈起读过的东西；discloseIdentity：A 如果知道某个笔名背后是谁，会不会告诉 B（多数人会替作者保密，默认 false）。只写聊天里看得出来的关系，to 必须是 persons 里的名字
+- relations（此人与其他人物的关系，有方向：写在 A 下面的是“A 对 B”）：type=${enumLine(REL_TYPES)}；closeness 同上 0–3；frequency=${enumLine(REL_FREQ)}；trust 0–1（A 对 B 的信任）；discloseOpinions：A 会不会跟 B 谈起读过的东西；discloseIdentity：A 如果知道某个笔名背后是谁，会不会告诉 B（多数人会替作者保密，默认 false）；since / until：关系只在这段时间内有效，例如某人哪天搬来同住、哪天才认识（不知道就留空）。只写聊天里看得出来的关系，to 必须是 persons 里的名字
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：${enumLine(FORMS)}
@@ -153,6 +153,7 @@ export function normalizeBundle(obj) {
                 closeness: Math.max(0, Math.min(3, num(r.closeness, 1))), frequency: freqKey(r.frequency),
                 trust: typeof r.trust === 'string' && /[低中高]/.test(r.trust) ? { 低: 0.3, 中: 0.6, 高: 0.9 }[r.trust.match(/[低中高]/)[0]] : Math.max(0, Math.min(1, num(r.trust, 0.6))),
                 discloseOpinions: r.discloseOpinions !== false, discloseIdentity: !!r.discloseIdentity,
+                since: date(r.since), until: date(r.until),
             })),
         })),
         works: arr(b.works).map(w => (typeof w === 'string' ? { title: w } : w)).filter(w => str(w.title || w.name)).map(w => ({
@@ -369,14 +370,27 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
         state.ledger.push(ev);
         setStatus(state, ev, 'approved');
     }
-    if (on('readings')) for (const r of b.readings) {
+    // 署了名的反响意味着此人当时已经读过：没有对应阅读记录的，补一条，态度按反响定
+    const inferred = [];
+    if (on('readings') && on('reactions')) {
+        for (const r of b.reactions) {
+            if (!r.person || !r.work || ['reader_letters', 'mentions'].includes(r.layer)) continue;
+            const has = b.readings.some(x => sameName(x.person, r.person) && sameName(x.work, r.work))
+                || inferred.some(x => sameName(x.person, r.person) && sameName(x.work, r.work));
+            if (!has) inferred.push({ date: r.date, person: r.person, work: r.work, read: 'finished', note: `由${LAYERS[r.layer]?.label || '反响'}推断（${r.date}）`, known: { polarity: r.polarity, source: LAYERS[r.layer]?.label } });
+        }
+        if (inferred.length) report.lines.push(`由署名反响补了 ${inferred.length} 条阅读记录：${inferred.map(x => `${x.person}读${x.work}`).join('、')}`);
+    }
+    if (on('readings')) for (const r of [...b.readings, ...inferred]) {
         const work = findWork(state, r.work);
         const person = ensurePerson(state, r.person, report);
         if (!work || !person) { report.skipped.push(`阅读：${r.person} 读《${r.work}》（找不到作品）`); continue; }
         if (state.currentDate && cmp(r.date, state.currentDate) > 0) { report.skipped.push(`阅读：${r.person} ${r.date} 晚于当前日期`); continue; }
         // 导入的是“已经发生的历史”：在当前日期之前，不让这些阅读另外推演出主角没收到过的信或文章
         const hist = state.currentDate ? { ...settings, publicBefore: state.currentDate, privateBefore: state.currentDate } : settings;
-        try { recordManualReading(state, hist, era, { workId: work.id, personId: person.id, date: r.date, read: r.read, note: r.note || '整理包' }); } catch (e) { report.skipped.push(`阅读：${e.message}`); }
+        // 同一部作品若他也有署名反响，用反响的态度
+        const kn = r.known || (() => { const x = b.reactions.find(y => y.person && sameName(y.person, r.person) && sameName(y.work, r.work) && !['reader_letters', 'mentions'].includes(y.layer)); return x ? { polarity: x.polarity, source: LAYERS[x.layer]?.label } : null; })();
+        try { recordManualReading(state, hist, era, { workId: work.id, personId: person.id, date: r.date, read: r.read, note: r.note || '整理包', known: kn }); } catch (e) { report.skipped.push(`阅读：${e.message}`); }
     }
     if (on('rumors')) for (const r of b.rumors) {
         if ((state.rumors || []).some(x => sameName(x.text, r.text))) continue;

@@ -226,7 +226,7 @@ assert(sb.pennames[0].knownBy.length === 1);
 assert.equal(sb.works.find(w => w.title === '石田日记 单行本').parentId, 'ishida');
 assert.equal(sb.ledger.filter(e => e.status === 'approved').length, 2);
 assert.equal(sb.ledger.find(e => e.layer === 'private_letter').personId, sb.persons.find(p => p.name === '奥克塔夫·米尔博').id);
-assert.equal(sb.receptions.filter(r => r.origin === 'manual').length, 1, '阅读记录按别名 L\'Aîné 找到作品');
+assert.equal(sb.receptions.filter(r => r.origin === 'manual').length, 2, '阅读记录按别名找到作品，另由米尔博私信推断一条');
 assert(sb.outlets.some(o => o.name === '人民呼声报'), '供稿刊物自动新建');
 // 再导入一次不重复
 B.applyBundle(sb, nb2, { settings: S });

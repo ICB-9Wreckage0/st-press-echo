@@ -550,7 +550,7 @@ span.pe-pol:not(.pe-chip) { font-size: .9em; padding: 0 4px; border: 1px solid; 
 .pe-concepts b { color: var(--pe-accent); }
 
 /* ---------- 熟人关系 ---------- */
-.pe-rel-row { display: grid; grid-template-columns: 1.4fr 1.1fr .8fr 1fr .6fr auto auto auto; gap: 6px; align-items: center; margin: 4px 0; font-size: .92em; }
+.pe-rel-row { display: grid; grid-template-columns: 1.3fr 1fr .7fr 1fr .55fr auto auto auto auto auto; gap: 6px; align-items: center; margin: 4px 0; font-size: .92em; }
 .pe-rel-row label { display: inline-flex; flex-direction: row !important; gap: 3px; align-items: center; white-space: nowrap; }
 .pe-rel-row .text_pole { margin: 0; min-width: 0; }
 @media (max-width: 760px) { .pe-rel-row { grid-template-columns: 1fr 1fr; } }
