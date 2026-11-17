@@ -20,6 +20,7 @@ import {
 import { extractFromText, loadWorldbookText } from './extract.js';
 import { callLLM } from './llm.js';
 import { Fab } from './fab.js';
+import { planImport, readTextFile } from './txtimport.js';
 
 let app = null; // { refreshInjection, detectFromChat }
 let tab = 'overview';
@@ -29,6 +30,8 @@ let searchResults = [];
 let ledgerFilter = '';
 let lastReport = null;
 let fab = null;
+let txtPlan = []; // txt 批量导入的预览（正文只放在内存里，导入时才写进作品）
+let txtOverwrite = false;
 
 const toast = (type, msg) => (globalThis.toastr?.[type] ? globalThis.toastr[type](msg, '报刊回声') : console.log('[报刊回声]', msg));
 
@@ -192,6 +195,10 @@ export function mountUI(appApi) {
     document.body.appendChild(panel);
     panel.addEventListener('click', onClick);
     panel.addEventListener('change', onChange);
+    panel.addEventListener('input', e => { if (e.target.dataset?.txt != null && e.target.tagName === 'INPUT') syncTxtField(e.target); });
+    panel.addEventListener('dragover', e => { const z = e.target.closest?.('#pe-txt-drop'); if (z) { e.preventDefault(); z.classList.add('pe-drop-on'); } });
+    panel.addEventListener('dragleave', e => { e.target.closest?.('#pe-txt-drop')?.classList.remove('pe-drop-on'); });
+    panel.addEventListener('drop', e => { const z = e.target.closest?.('#pe-txt-drop'); if (!z) return; e.preventDefault(); z.classList.remove('pe-drop-on'); loadTxtFiles([...(e.dataTransfer?.files || [])]); });
     bindWindow(panel);
     applyRect(panel, s0.winRect);
     window.addEventListener('resize', () => applyRect(panel, getSettings().winRect));
@@ -524,9 +531,109 @@ function listBlock(title, kind, list, spec, st, labelFn) {
     </section>`;
 }
 
+function txtImportBlock(st) {
+    const outOpts = r => `<option value="">（无刊物）</option>${st.outlets.map(o => `<option value="${h(o.id)}" ${o.id === r.outletId ? 'selected' : ''}>${h(o.name)}</option>`).join('')}${r.outletName && !r.outletId ? `<option value="new:${h(r.outletName)}" ${r.newOutlet ? 'selected' : ''}>新建刊物“${h(r.outletName)}”</option>` : ''}`;
+    const actOpts = r => `<option value="new" ${r.action === 'new' ? 'selected' : ''}>新建作品</option>${st.works.map(w => `<option value="update:${h(w.id)}" ${r.action === 'update' && r.workId === w.id ? 'selected' : ''}>更新《${h(w.title)}》</option>`).join('')}<option value="skip" ${r.action === 'skip' ? 'selected' : ''}>跳过</option>`;
+    const formOpts = r => Object.entries(FORMS).map(([k, v]) => `<option value="${k}" ${k === r.form ? 'selected' : ''}>${h(v)}</option>`).join('');
+    return `
+    <section class="pe-drop" id="pe-txt-drop">
+      <h4>从 txt 导入作品</h4>
+      <div class="pe-muted">按文件名识别：<b>作品名-刊物名1890-4-12.txt</b>。日期取首次发表（连载写第一期）；“小册子/单行本”会当作形式而不是刊物；写“1890-6中”的记为约略日期；文件名开头的 0、AA 之类前缀会去掉；没有日期的当作未发表的稿子，默认跳过。也可以把文件直接拖到这里。</div>
+      <div class="pe-toolbar">
+        <label class="menu_button pe-file pe-primary">选择 txt 文件（可多选）<input type="file" id="pe-txt-files" multiple accept=".txt,.md,text/plain" hidden></label>
+        ${txtPlan.length ? `<button class="pe-primary" data-act="txt-commit">导入 ${txtPlan.filter(r => r.action !== 'skip').length} 个</button><button data-act="txt-clear">清空</button>
+        <label class="pe-check-inline"><input type="checkbox" id="pe-txt-overwrite" ${txtOverwrite ? 'checked' : ''}> 更新已有作品时，也用文件名覆盖它的日期、刊物和形式</label>` : ''}
+      </div>
+      ${txtPlan.map((r, i) => `<div class="pe-card pe-txt-row ${r.action === 'skip' ? 'pe-txt-skip' : ''}">
+        <div class="pe-card-main">
+          <div class="pe-card-top"><span class="pe-muted">${h(r.fileName)}</span><span class="pe-chip">${r.length} 字</span>
+            ${r.isDraft ? '<span class="pe-chip">无日期·当作草稿</span>' : ''}${r.dateApprox ? `<span class="pe-chip pe-chip-major">约略日期“${h(r.dateRaw)}”，请核对</span>` : ''}</div>
+          <div class="pe-txt-grid">
+            <label>作品名<input type="text" data-txt="${i}" data-f="title" value="${h(r.title)}"></label>
+            <label>首次发表<input type="text" data-txt="${i}" data-f="date" value="${h(r.date)}" placeholder="YYYY-MM-DD"></label>
+            <label>刊物<select data-txt="${i}" data-f="outlet">${outOpts(r)}</select></label>
+            <label>形式<select data-txt="${i}" data-f="form">${formOpts(r)}</select></label>
+            <label>操作<select data-txt="${i}" data-f="action">${actOpts(r)}</select></label>
+          </div>
+        </div></div>`).join('')}
+    </section>`;
+}
+
 function works(st) {
-    return listBlock('笔名', 'penname', st.pennames, PEN_SPEC, st, p => `<b>${h(p.name)}</b> ${p.owner ? '<small>（' + h(p.owner) + '）</small>' : ''} ${p.publicIdentityKnown ? '<small class="pe-tag">身份已公开</small>' : ''}`)
-        + listBlock('作品', 'work', [...st.works].sort((a, b) => cmp(a.pubDate || '9', b.pubDate || '9')), WORK_SPEC, st, w => `<b>《${h(w.title)}》</b> <small>${h(byId(st.pennames, w.pennameId)?.name || '')} · ${h(FORMS[w.form] || '')} · ${h(byId(st.outlets, w.outletId)?.name || '')} · ${h(w.pubDate || '未定日期')}</small>`);
+    return txtImportBlock(st)
+        + listBlock('作品', 'work', [...st.works].sort((a, b) => cmp(a.pubDate || '9', b.pubDate || '9')), WORK_SPEC, st, w => `<b>《${h(w.title)}》</b> <small>${h(byId(st.pennames, w.pennameId)?.name || '')} · ${h(FORMS[w.form] || '')} · ${h(byId(st.outlets, w.outletId)?.name || '')} · ${h(w.pubDate || '未定日期')}${w.sourceText ? ` · 原文 ${w.sourceText.length} 字` : ''}${w.evidence ? ' · 有证据卡' : ''}</small>`)
+        + listBlock('笔名', 'penname', st.pennames, PEN_SPEC, st, p => `<b>${h(p.name)}</b> ${p.owner ? '<small>（' + h(p.owner) + '）</small>' : ''} ${p.publicIdentityKnown ? '<small class="pe-tag">身份已公开</small>' : ''}`);
+}
+
+async function loadTxtFiles(files) {
+    const st = getState();
+    if (!st || !files?.length) return;
+    setBusy('读取 txt');
+    try {
+        for (const f of files) {
+            if (!/\.(txt|md|text)$/i.test(f.name) && f.type && !f.type.startsWith('text/')) continue;
+            const text = await readTextFile(f);
+            txtPlan = txtPlan.filter(r => r.fileName !== f.name);
+            txtPlan.push({ ...planImport(st, f.name, text), text });
+        }
+        txtPlan.sort((a, b) => cmp(a.date || '9999', b.date || '9999'));
+    } finally { setBusy(''); }
+    refresh();
+}
+
+function syncTxtField(t) {
+    const r = txtPlan[+t.dataset.txt];
+    if (!r) return;
+    const f = t.dataset.f;
+    if (f === 'title') r.title = t.value.trim();
+    else if (f === 'date') { r.date = normalizeISO(t.value.trim()) || t.value.trim(); r.dateApprox = false; }
+    else if (f === 'form') r.form = t.value;
+    else if (f === 'outlet') {
+        if (t.value.startsWith('new:')) { r.outletId = ''; r.newOutlet = true; } else { r.outletId = t.value; r.newOutlet = false; }
+    } else if (f === 'action') {
+        if (t.value.startsWith('update:')) { r.action = 'update'; r.workId = t.value.slice(7); } else { r.action = t.value; }
+        refresh();
+    }
+}
+
+function commitTxt(st) {
+    const MAX = 150000;
+    let made = 0, updated = 0, outlets = 0;
+    const bad = [];
+    for (const r of txtPlan) {
+        if (r.action === 'skip') continue;
+        if (!r.title) { bad.push(r.fileName + '：缺作品名'); continue; }
+        if (r.date && !/^\d{4}-\d{2}-\d{2}$/.test(r.date)) { bad.push(r.fileName + '：日期格式不对'); continue; }
+        let outletId = r.outletId;
+        if (!outletId && r.newOutlet && r.outletName) {
+            let o = findOutlet(st, r.outletName);
+            if (!o) { o = { ...blankOutlet(), name: r.outletName }; st.outlets.push(o); outlets++; }
+            outletId = o.id;
+        }
+        const text = String(r.text || '').slice(0, MAX);
+        let w = r.action === 'update' ? byId(st.works, r.workId) : null;
+        if (w) {
+            w.sourceText = text;
+            w.sourceFrom = [`txt:${r.fileName}`];
+            if (w.evidence) w.evidence.stale = true;
+            if (txtOverwrite || !w.pubDate) w.pubDate = r.date || w.pubDate;
+            if (txtOverwrite || !w.outletId) w.outletId = outletId || w.outletId;
+            if (txtOverwrite) w.form = r.form;
+            updated++;
+        } else {
+            w = { ...blankWork(), title: r.title, pubDate: r.date || '', outletId: outletId || '', form: r.form, pennameId: st.pennames[0]?.id || '', sourceText: text, sourceFrom: [`txt:${r.fileName}`] };
+            st.works.push(w);
+            made++;
+        }
+    }
+    txtPlan = [];
+    logLine(st, `txt 导入：新建 ${made}，更新 ${updated}，新刊物 ${outlets}`);
+    commit(`已导入：新建 ${made} 部、更新 ${updated} 部${outlets ? `，新建刊物 ${outlets} 个（请到“人物与刊物”补全出刊周期）` : ''}${bad.length ? `；跳过 ${bad.length} 个：${bad.join('；')}` : ''}`);
+}
+
+function findOutlet(st, name) {
+    const n = String(name).replace(/\s/g, '');
+    return st.outlets.find(o => o.name.replace(/\s/g, '') === n) || st.outlets.find(o => { const m = o.name.replace(/\s/g, ''); return m.includes(n) || n.includes(m); }) || null;
 }
 
 function people(st) {
@@ -534,23 +641,120 @@ function people(st) {
         + listBlock('人物', 'person', st.persons, PERSON_SPEC, st, p => `<b>${h(p.name)}</b> <small>${(p.roles || []).map(r => ROLES[r]).join('/')} · ${(p.outletIds || []).map(id => byId(st.outlets, id)?.name).filter(Boolean).join('、') || '无供稿刊物'} · 私交：${CLOSE[p.closeness || 0]}${p.real ? ' · 真实人物' : ''}${p.active === false ? ' · 不参与推演' : ''}</small>`);
 }
 
+// ———— 年代档案的排版：把模型返回的长串拆成卡片、标签和列表 ————
+
+const asArr = v => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]);
+const asText = v => (typeof v === 'string' ? v : v == null ? '' : typeof v === 'object' ? Object.values(v).filter(Boolean).join(' / ') : String(v));
+/** 把 ；; 。分隔的长句拆成条目 */
+function splitPoints(t, commas = false) {
+    // 按 ；; 。（可选：，,）拆，括号里的不拆
+    const out = []; let cur = ''; let depth = 0;
+    const seps = commas ? '；;。，,' : '；;。';
+    for (const ch of String(t || '')) {
+        if ('（(《“'.includes(ch)) depth++;
+        if ('）)》”'.includes(ch)) depth = Math.max(0, depth - 1);
+        if (!depth && seps.includes(ch)) { if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+}
+/** 突出价格、数字和书名号里的名字 */
+function emph(t) {
+    return h(t)
+        .replace(/(\d[\d,.]*\s*(?:至|-|–|~)?\s*\d*[\d,.]*\s*(?:法郎|生丁|苏|先令|便士|英镑|美元|马克|卢布|里拉|元|文|万份|份|册|页|%|年|月|日))/g, '<b class="pe-num">$1</b>')
+        .replace(/(《[^》]{1,40}》)/g, '<span class="pe-em">$1</span>');
+}
+const PER_SHORT = { daily: '日报', weekly: '周刊', biweekly: '半月刊', monthly: '月刊', irregular: '不定期' };
+
+function eraPress(list) {
+    const items = asArr(list).map(x => (typeof x === 'string' ? { name: x } : x || {}))
+        .sort((a, b) => (Number(b.tier) || 0) - (Number(a.tier) || 0));
+    if (!items.length) return '';
+    return `<div class="pe-era-grid">${items.map(o => `<div class="pe-era-card">
+        <div class="pe-era-name"><b>${h(o.nameZh || o.name || '')}</b>${o.nameZh && o.name ? ` <span class="pe-muted">${h(o.name)}</span>` : ''}</div>
+        <div class="pe-era-chips">
+          ${o.type ? `<span class="pe-chip pe-chip-layer">${h(PER_SHORT[o.type] || PERIODICITY[o.type] || o.type)}</span>` : ''}
+          ${o.circle ? `<span class="pe-chip">${h(CIRCLES[o.circle] || o.circle)}</span>` : ''}
+          ${o.tier ? `<span class="pe-chip pe-tier" title="影响力 ${h(o.tier)}/5">${'●'.repeat(Math.max(0, Math.min(5, Number(o.tier) || 0)))}<i>${'●'.repeat(5 - Math.max(0, Math.min(5, Number(o.tier) || 0)))}</i></span>` : ''}
+        </div>
+        ${o.politics ? `<div class="pe-era-line"><span class="pe-era-k">倾向</span>${emph(o.politics)}</div>` : ''}
+        ${o.note ? `<div class="pe-era-note">${emph(o.note)}</div>` : ''}
+      </div>`).join('')}</div>`;
+}
+
+function eraCritics(list) {
+    const items = asArr(list).map(x => (typeof x === 'string' ? { name: x } : x || {}));
+    if (!items.length) return '';
+    return `<div class="pe-era-grid">${items.map(c => `<div class="pe-era-card">
+        <div class="pe-era-name"><b>${h(c.nameZh || c.name || '')}</b>${c.nameZh && c.name ? ` <span class="pe-muted">${h(c.name)}</span>` : ''}</div>
+        ${c.venue ? `<div class="pe-era-chips"><span class="pe-chip pe-chip-layer">${h(c.venue)}</span></div>` : ''}
+        ${c.stance ? `<div class="pe-era-line"><span class="pe-era-k">立场</span>${emph(c.stance)}</div>` : ''}
+        ${c.note ? `<div class="pe-era-note">${emph(c.note)}</div>` : ''}
+      </div>`).join('')}</div>`;
+}
+
+function eraEvents(list) {
+    const items = asArr(list).map(x => (typeof x === 'string' ? { event: x } : x || {}))
+        .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+    if (!items.length) return '';
+    return `<div class="pe-era-tl">${items.map(e => `<div class="pe-era-tl-row"><span class="pe-era-tl-date">${h(e.date || '—')}</span><span class="pe-era-tl-ev">${emph(e.event || asText(e))}</span></div>`).join('')}</div>`;
+}
+
+function eraSeason(f) {
+    if (!f || typeof f !== 'object') return '';
+    const vals = Array.from({ length: 12 }, (_, i) => Number(f[i + 1] ?? f[String(i + 1)] ?? 1));
+    return `<div class="pe-era-season">${vals.map((v, i) => `<div class="pe-era-mon ${v < 0.8 ? 'low' : ''}" title="${i + 1} 月：报刊活跃度 ×${v}"><i style="height:${Math.round(Math.max(0.1, Math.min(1.3, v)) / 1.3 * 100)}%"></i><span>${i + 1}</span></div>`).join('')}</div>
+      <div class="pe-muted">柱子越低，这个月报刊上的评论越少（例如八月的巴黎报界淡季）。</div>`;
+}
+
+function eraBlock(title, body, { open = true, count = null, cls = '' } = {}) {
+    if (!body) return '';
+    return `<details class="pe-era-sec ${cls}" ${open ? 'open' : ''}><summary>${title}${count != null ? ` <span class="pe-count pe-count-dim">${count}</span>` : ''}</summary>${body}</details>`;
+}
+
+function eraView(prof) {
+    const bullets = arr => arr.length ? `<ul class="pe-era-ul">${arr.map(x => `<li>${emph(x)}</li>`).join('')}</ul>` : '';
+    const chips = (arr, cls = '') => arr.length ? `<div class="pe-era-chips pe-era-chips-wrap">${arr.map(x => `<span class="pe-chip ${cls}">${h(asText(x))}</span>`).join('')}</div>` : '';
+    const press = asArr(prof.pressLandscape), critics = asArr(prof.critics), events = asArr(prof.recentEvents);
+    return `
+      ${prof.summary ? `<div class="pe-era-summary">${emph(asText(prof.summary))}</div>` : ''}
+      ${asArr(prof.uncertain).length ? `<div class="pe-callout pe-callout-warn"><div><b>需要你核对</b>${bullets(asArr(prof.uncertain).map(asText))}</div></div>` : ''}
+      <div class="pe-era-two">
+        ${prof.currency ? `<div class="pe-era-box"><div class="pe-era-boxt">货币与物价</div>${bullets(splitPoints(asText(prof.currency), true))}</div>` : ''}
+        ${prof.styleNotes ? `<div class="pe-era-box"><div class="pe-era-boxt">报刊文体</div>${bullets(splitPoints(asText(prof.styleNotes)))}</div>` : ''}
+      </div>
+      ${eraBlock('报刊格局', eraPress(press), { count: press.length })}
+      ${eraBlock('活跃评论家', eraCritics(critics), { count: critics.length })}
+      ${eraBlock('近期大事', eraEvents(events), { count: events.length })}
+      ${eraBlock('文学与思想潮流', chips(asArr(prof.movements), 'pe-chip-layer'))}
+      ${eraBlock('时代用语', chips(asArr(prof.vocabulary)), { open: false })}
+      ${eraBlock('此时尚不存在（写进去会穿帮）', chips(asArr(prof.forbiddenAnachronisms), 'pe-chip-no'), { cls: 'pe-era-no' })}
+      ${eraBlock('报刊季节活跃度', eraSeason(prof.seasonFactors), { open: false })}`;
+}
+
 function era(st, s) {
     const prof = getEra();
     const year = st.era?.year || (st.currentDate ? yearOf(st.currentDate) : '');
     const titles = defaultWikiTitles(year, st.era?.country || '', s.wikiLangs).map(t => `${t.lang}:${t.title}`).join('\n');
-    const sec = (label, v) => v && (Array.isArray(v) ? v.length : true) ? `<p><b>${label}</b>：${h(Array.isArray(v) ? v.map(x => typeof x === 'string' ? x : Object.values(x).filter(Boolean).join(' / ')).join('；') : v)}</p>` : '';
     return `
     <section>
-      <h4>年代档案 ${prof ? `<small>（截至 ${h(prof.asOf || prof.year)}，资料：${h((prof.sources || []).join('，') || '模型知识')}）</small>` : ''}</h4>
-      ${prof ? `${sec('概况', prof.summary)}${sec('货币', prof.currency)}${sec('报刊格局', prof.pressLandscape)}${sec('活跃评论家', prof.critics)}${sec('潮流', prof.movements)}${sec('近期大事', prof.recentEvents)}${sec('文体', prof.styleNotes)}${sec('时代用语', prof.vocabulary)}${sec('禁止出现', prof.forbiddenAnachronisms)}${sec('待核', prof.uncertain)}` : '<p>尚未生成。生成后，写稿和注入都会按这个年代约束。</p>'}
-      <div class="pe-row">
-        <button class="pe-primary" data-act="era-build" ${s.wikiEnabled ? '' : 'disabled'}>检索维基百科并生成</button>
-        <button data-act="era-build-nowiki">仅用模型知识生成</button>
-        ${prof ? '<button data-act="era-propose">把其中的刊物与评论家加入待合并</button><button data-act="era-edit">编辑 JSON</button><button data-act="era-clear">清除</button>' : ''}
+      <div class="pe-era-head">
+        <div>
+          <div class="pe-era-title">${h(prof?.year || year || '—')} 年代档案</div>
+          <div class="pe-muted">${prof ? `截至 <b class="pe-num">${h(prof.asOf || prof.year)}</b> · ${h(prof.place || st.era?.place || '')}` : '尚未生成。生成后，写稿和注入都会按这个年代约束。'}</div>
+          ${prof ? `<div class="pe-era-chips pe-era-chips-wrap" style="margin-top:4px">${(prof.sources || []).length ? prof.sources.map(x => `<span class="pe-chip" title="资料来源">${h(x)}</span>`).join('') : '<span class="pe-chip">仅凭模型知识</span>'}</div>` : ''}
+        </div>
+        <div class="pe-toolbar">
+          <button class="pe-primary" data-act="era-build" ${s.wikiEnabled ? '' : 'disabled'}>${prof ? '重新检索并生成' : '检索维基百科并生成'}</button>
+          <button data-act="era-build-nowiki">仅用模型知识生成</button>
+          ${prof ? '<details class="pe-more-acts pe-inline-more"><summary>更多</summary><button data-act="era-propose">刊物与评论家加入待合并</button><button data-act="era-edit">编辑 JSON</button><button data-act="era-clear">清除</button></details>' : ''}
+        </div>
       </div>
-      <details><summary>检索的维基页面（每行 语言:标题，可改）</summary><textarea id="pe-wiki-titles" rows="5">${h(titles)}</textarea>
-      <small>同年份的页面会自动剪掉当前故事日期之后的月份和条目，避免剧透未来。</small></details>
-      ${editing?.kind === 'era' ? `<textarea id="pe-era-json" rows="16">${h(JSON.stringify(prof, null, 2))}</textarea><div class="pe-row"><button data-act="era-save-json">保存</button><button data-act="cancel-edit">取消</button></div>` : ''}
+      ${editing?.kind === 'era' ? `<textarea id="pe-era-json" rows="16">${h(JSON.stringify(prof, null, 2))}</textarea><div class="pe-row"><button class="pe-primary" data-act="era-save-json">保存</button><button data-act="cancel-edit">取消</button></div>` : ''}
+      ${prof && editing?.kind !== 'era' ? eraView(prof) : ''}
+      <details class="pe-fold"><summary>检索的维基页面（每行 语言:标题，可改）</summary><textarea id="pe-wiki-titles" rows="5">${h(titles)}</textarea>
+      <div class="pe-muted">同年份的页面会自动剪掉当前故事日期之后的月份和条目，避免剧透未来。</div></details>
     </section>
     <section>
       <h4>检索当前年代</h4>
@@ -695,6 +899,9 @@ function settings(st, s) {
 function onChange(e) {
     const t = e.target;
     if (t.id === 'pe-ledger-filter') { ledgerFilter = t.value; refresh(); }
+    if (t.id === 'pe-txt-files' && t.files?.length) { loadTxtFiles([...t.files]); t.value = ''; return; }
+    if (t.id === 'pe-txt-overwrite') { txtOverwrite = t.checked; return; }
+    if (t.dataset?.txt != null) { syncTxtField(t); return; }
     if (t.id === 'pe-epi-scope') { const st = getState(); if (st) { st.epiScope = t.value; commit(); } }
     if (t.id === 'pe-epi-file' && t.files?.[0]) {
         const f = t.files[0];
@@ -742,6 +949,8 @@ async function onClick(e) {
     try {
         switch (act) {
         case 'close': togglePanel(false); break;
+        case 'txt-commit': commitTxt(st); break;
+        case 'txt-clear': txtPlan = []; refresh(); break;
         case 'win-reset': { const p = document.getElementById('pe-panel'); getSettings().winRect = null; saveSettings(); applyRect(p, null); break; }
 
         // 日期

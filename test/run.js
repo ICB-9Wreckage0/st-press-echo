@@ -25,6 +25,9 @@ assert.equal(weekdayZh('1890-05-26'), '星期一');
 assert.equal(weekdayZh('1890-08-30'), '星期六');
 console.log('日期识别 ✓');
 
+// —— txt 文件名 ——
+
+
 // —— 剪掉未来 ——
 const wiki = `== Événements ==\n=== Juin ===\n24 juin : quelque chose\n=== Août ===\n6 août : exécution de Kemmler\n== Naissances ==\n2 juin : X\n29 juillet : Y meurt`;
 const tr = trimFuture(wiki, '1890-06-24');
@@ -172,3 +175,19 @@ assert(pr.system.includes('不得晚于'));
 console.log('\n写稿提示词长度', pr.system.length + pr.user.length);
 console.log('时代校验：', checkAnachronism({ title: '', body: '他在电影院想起1926年' }, { forbiddenAnachronisms: ['电影院'] }, { date: '1890-06-01', workId: 'wtest' }, st));
 console.log('\n全部测试通过');
+
+const { parseFileName } = await import('../src/txtimport.js');
+const fnCases = [
+  ['长子-回声报-1890-4-15.txt', '长子', '回声报', '', '1890-04-15'],
+  ['1999年12月31日-造反者报1890-4-12.txt', '1999年12月31日', '造反者报', '', '1890-04-12'],
+  ['生者与死亡1-小册子1890-5-1.txt', '生者与死亡1', '', 'pamphlet', '1890-05-01'],
+  ['生者与死亡3-上-1890-9-1.txt', '生者与死亡3-上', '', '', '1890-09-01'],
+  ['AA权与欲的觉醒-女公民报1890-5-22.txt', '权与欲的觉醒', '女公民报', '', '1890-05-22'],
+  ['0池中的鳄鱼-改前.txt', '池中的鳄鱼-改前', '', '', ''],
+];
+for (const [n, t, o, f, d] of fnCases) {
+  const r = parseFileName(n);
+  assert.deepEqual([r.title, r.outletName, r.form, r.date], [t, o, f, d], n);
+}
+assert.equal(parseFileName('日语简明入门（附录）1890-6中.txt').dateApprox, true);
+console.log('txt 文件名解析 ✓');
