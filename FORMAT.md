@@ -13,8 +13,11 @@
   "pennames": [{ "name": "笔名", "owner": "真实作者", "publicIdentityKnown": false, "knownBy": ["知道这个笔名是谁的人"] }],
   "outlets": [{ "name": "刊物名（用中文常用译名，全文统一）", "originalName": "原文名", "periodicity": "daily", "weekday": null, "monthDays": [], "circle": "general", "tier": 3, "politics": ["政治/宗教倾向"], "real": true, "note": "" }],
   "persons": [{ "name": "姓名（全文统一用一个写法）", "aliases": ["别名"], "roles": ["critic"], "outlets": ["供稿的刊物名"], "reads": ["常读的刊物名"], "interests": ["关注题材"], "likes": ["欣赏"], "dislikes": ["反感"], "closeness": 0, "knowsIdentity": false, "real": true, "monthlyCapacity": 2, "columnWeekday": null, "notes": "与主角的关系、往来",
+      "stances": [{ "issue": "议题（短名词，如 死刑）", "side": "con", "strength": 3, "note": "具体立场", "source": "依据" }],
+      "stylePrefs": [{ "aspect": "文体项目（如 解释密度）", "leaning": "倾向一句话", "tolerance": 2, "source": "依据" }],
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
-  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day" }],
+  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day",
+      "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
   "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
   "rumors": [{ "text": "坊间传闻", "strength": 0.5 }],
@@ -31,6 +34,9 @@
 - roles（公开身份，可多选）：critic=评论家，journalist=记者/专栏作者，editor=编辑，writer=作家，scholar=学者/专业人士；只是朋友、从不公开写评论的人填 []
 - closeness（与主角私交）：0 陌生，1 认识，2 朋友，3 至交
 - relations（此人与其他人物的关系，有方向：写在 A 下面的是“A 对 B”）：type=friend=朋友，colleague=同事，family=家人/伴侣，mentor=师友/前辈，editor=编辑与作者，salon=沙龙/聚会常客，correspondent=通信往来，rival=对手/论敌；closeness 同上 0–3；frequency=daily=几乎天天见，weekly=每周，monthly=每月，rare=偶尔；trust 0–1（A 对 B 的信任）；discloseOpinions：A 会不会跟 B 谈起读过的东西；discloseIdentity：A 如果知道某个笔名背后是谁，会不会告诉 B（多数人会替作者保密，默认 false）；since / until：关系只在这段时间内有效，例如某人哪天搬来同住、哪天才认识（不知道就留空）。只写聊天里看得出来的关系，to 必须是 persons 里的名字
+- stances（人物在具体议题上的立场）：side=pro 支持 / con 反对 / mixed 有保留；strength=1 低 / 2 中 / 3 高（对他有多重要）；source 写依据（史实/某日书信/推测）。只写有依据的；推测的 strength 不要给 3
+- stylePrefs（人物读作品时在意的写法，是倾向不是规则）：aspect 如 词汇选择、句子节奏、解释密度、修辞密度、叙述距离、情绪强度、论证重复度；leaning 一句话；tolerance=1 难以容忍 / 2 视情况 / 3 宽容。不要用他自己的文风反推
+- claims（作品在议题上的主张）：side 同上，“大体反对但保留例外”填 mixed；issue 尽量与人物 stances 用同一个词，才能对照出赞同或分歧
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：serial=报纸连载，article=单篇文章，book=成书，pamphlet=小册子/附赠本，translation_serial=译作连载，translation_book=译作单行本
@@ -48,6 +54,7 @@
 
 ## 提示词
 
+```
 请把我接下来提供的角色扮演聊天记录（以及书信、设定）整理成一份 JSON“整理包”，供 SillyTavern 插件“报刊回声”导入。故事是历史背景，主角以笔名发表作品，插件会据此推演报刊和文坛的反响。
 
 格式如下：
@@ -59,8 +66,11 @@
   "pennames": [{ "name": "笔名", "owner": "真实作者", "publicIdentityKnown": false, "knownBy": ["知道这个笔名是谁的人"] }],
   "outlets": [{ "name": "刊物名（用中文常用译名，全文统一）", "originalName": "原文名", "periodicity": "daily", "weekday": null, "monthDays": [], "circle": "general", "tier": 3, "politics": ["政治/宗教倾向"], "real": true, "note": "" }],
   "persons": [{ "name": "姓名（全文统一用一个写法）", "aliases": ["别名"], "roles": ["critic"], "outlets": ["供稿的刊物名"], "reads": ["常读的刊物名"], "interests": ["关注题材"], "likes": ["欣赏"], "dislikes": ["反感"], "closeness": 0, "knowsIdentity": false, "real": true, "monthlyCapacity": 2, "columnWeekday": null, "notes": "与主角的关系、往来",
+      "stances": [{ "issue": "议题（短名词，如 死刑）", "side": "con", "strength": 3, "note": "具体立场", "source": "依据" }],
+      "stylePrefs": [{ "aspect": "文体项目（如 解释密度）", "leaning": "倾向一句话", "tolerance": 2, "source": "依据" }],
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
-  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day" }],
+  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day",
+      "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
   "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
   "rumors": [{ "text": "坊间传闻", "strength": 0.5 }],
@@ -76,6 +86,9 @@
 - roles（公开身份，可多选）：critic=评论家，journalist=记者/专栏作者，editor=编辑，writer=作家，scholar=学者/专业人士；只是朋友、从不公开写评论的人填 []
 - closeness（与主角私交）：0 陌生，1 认识，2 朋友，3 至交
 - relations（此人与其他人物的关系，有方向：写在 A 下面的是“A 对 B”）：type=friend=朋友，colleague=同事，family=家人/伴侣，mentor=师友/前辈，editor=编辑与作者，salon=沙龙/聚会常客，correspondent=通信往来，rival=对手/论敌；closeness 同上 0–3；frequency=daily=几乎天天见，weekly=每周，monthly=每月，rare=偶尔；trust 0–1（A 对 B 的信任）；discloseOpinions：A 会不会跟 B 谈起读过的东西；discloseIdentity：A 如果知道某个笔名背后是谁，会不会告诉 B（多数人会替作者保密，默认 false）；since / until：关系只在这段时间内有效，例如某人哪天搬来同住、哪天才认识（不知道就留空）。只写聊天里看得出来的关系，to 必须是 persons 里的名字
+- stances（人物在具体议题上的立场）：side=pro 支持 / con 反对 / mixed 有保留；strength=1 低 / 2 中 / 3 高（对他有多重要）；source 写依据（史实/某日书信/推测）。只写有依据的；推测的 strength 不要给 3
+- stylePrefs（人物读作品时在意的写法，是倾向不是规则）：aspect 如 词汇选择、句子节奏、解释密度、修辞密度、叙述距离、情绪强度、论证重复度；leaning 一句话；tolerance=1 难以容忍 / 2 视情况 / 3 宽容。不要用他自己的文风反推
+- claims（作品在议题上的主张）：side 同上，“大体反对但保留例外”填 mixed；issue 尽量与人物 stances 用同一个词，才能对照出赞同或分歧
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：serial=报纸连载，article=单篇文章，book=成书，pamphlet=小册子/附赠本，translation_serial=译作连载，translation_book=译作单行本
@@ -93,5 +106,4 @@
 
 如果内容很长，可以分几次输出，每次都是完整、合法的 JSON；我会依次导入，插件会按名字合并。
 准备好了就回复“请发送聊天记录”。
-
-插件里的“复制提示词”按钮会额外附上你已有的人物、刊物、作品名，让外部 AI 沿用同样的写法。
+```

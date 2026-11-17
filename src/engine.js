@@ -11,7 +11,7 @@ import { reapplyDecisions } from './rollback.js';
 import { addDays, diffDays, monthOf, monthKey, weekday, dayOf, cmp, normalizeISO } from './date.js';
 import { roll } from './rng.js';
 import { clamp, uid, deepClone } from './util.js';
-import { matchCount, useConcepts } from './concepts.js';
+import { matchCount, useConcepts, tagSim } from './concepts.js';
 
 // ———————————— 常量 ————————————
 
@@ -149,7 +149,55 @@ export function outletSections(o) {
 
 export function workTags(state, work) {
     const host = byId(state.outlets, work.outletId);
-    return [...(work.themes || []), ...(host?.politics || [])];
+    return [...(work.themes || []), ...(work.claims || []).map(c => c?.issue).filter(Boolean), ...(host?.politics || [])];
+}
+
+// ———————————— 议题立场：人物的立场 × 作品的主张 ————————————
+
+export const SIDES = { pro: '支持', con: '反对', mixed: '有保留' };
+export const STANCE_STRENGTH = { 1: '低', 2: '中', 3: '高' };
+export const TOLERANCE = { 1: '难以容忍', 2: '视情况', 3: '宽容' };
+const sideKey = v => { const t = String(v ?? '').trim().toLowerCase(); return ['pro', 'con', 'mixed'].includes(t) ? t : /反对|against|contre|con/.test(t) ? 'con' : /保留|折中|部分|mixed|partial|nuanc/.test(t) ? 'mixed' : /支持|赞成|for|pour|pro/.test(t) ? 'pro' : ''; };
+export const normSide = sideKey;
+export const normStrength = v => { const n = Number(v); if ([1, 2, 3].includes(n)) return n; const t = String(v ?? ''); return /高|强|high|strong/i.test(t) ? 3 : /低|弱|low|weak/i.test(t) ? 1 : 2; };
+
+/**
+ * 对照人物立场与作品主张。只比同一议题（或语义归为一组的议题）。
+ * 同向 +0.4×强度；相反 −0.45×强度；一方“有保留”= 部分赞同、有分歧（立场越强越不满意折中）。
+ */
+export function stanceMatch(state, person, work) {
+    useConcepts(state.concepts);
+    const out = { score: 0, agree: [], disagree: [], partial: [], weight: 0 };
+    for (const c of work.claims || []) {
+        const cs = sideKey(c?.side);
+        if (!c?.issue || !cs) continue;
+        let best = null, sim = 0;
+        for (const st of person.stances || []) {
+            const v = tagSim(st?.issue, c.issue, false);
+            if (v > sim) { sim = v; best = st; }
+        }
+        if (!best || sim < 0.75) continue;
+        const ps = sideKey(best.side); if (!ps) continue;
+        const w = normStrength(best.strength);
+        const label = `${c.issue}${c.note ? `（作品：${c.note}）` : ''}`;
+        let d;
+        if (ps === cs) { d = 0.4 * w; out.agree.push(label); }
+        else if (ps === 'mixed' || cs === 'mixed') { d = (2 - w) * 0.25; out.partial.push(label); }
+        else { d = -0.45 * w; out.disagree.push(label); }
+        out.score += d * sim;
+        out.weight = Math.max(out.weight, w);
+    }
+    return out;
+}
+
+/** 一句话描述思想上的对照结果（写进“为什么”和提示词） */
+export function stanceText(m) {
+    if (!m || (!m.agree.length && !m.disagree.length && !m.partial.length)) return '';
+    const parts = [];
+    if (m.agree.length) parts.push(`赞同：${m.agree.join('；')}`);
+    if (m.partial.length) parts.push(`部分赞同、有分歧：${m.partial.join('；')}`);
+    if (m.disagree.length) parts.push(`反对：${m.disagree.join('；')}`);
+    return parts.join('。');
 }
 
 export function readsOutlets(state, person) {
@@ -216,7 +264,7 @@ function between(seed, key, [lo, hi]) {
 }
 
 function interestOf(person, tags) {
-    const pool = [...(person.interests || []), ...(person.likes || []), ...(person.dislikes || [])];
+    const pool = [...(person.interests || []), ...(person.likes || []), ...(person.dislikes || []), ...(person.stances || []).map(x => x?.issue).filter(Boolean)];
     return clamp((matchCount(pool, tags, true) / Math.max(1, tags.length)) * 2, 0, 1);
 }
 
@@ -226,9 +274,10 @@ export function computePolarity(state, person, work, r, layer) {
     const tags = workTags(state, work);
     const likes = matchCount(person.likes, tags, false);
     const dislikes = matchCount(person.dislikes, tags, false);
-    if (layer === 'polemic' && dislikes > likes) return -1;
-    // 标签重叠是主因；私交深的人下笔更宽厚；剩下交给运气（没有任何重叠时，约八分之一偏好、八分之一偏坏）
-    const score = likes - dislikes + 0.15 * (Number(person.closeness) || 0) + (r - 0.5) * 1.6;
+    const ideas = stanceMatch(state, person, work).score;
+    if (layer === 'polemic' && (dislikes > likes || ideas < -0.5)) return -1;
+    // 标签重叠与议题立场是主因；私交深的人下笔更宽厚；剩下交给运气（没有任何重叠时，约八分之一偏好、八分之一偏坏）
+    const score = likes - dislikes + ideas + 0.15 * (Number(person.closeness) || 0) + (r - 0.5) * 1.6;
     return score > 0.6 ? 1 : score < -0.6 ? -1 : 0;
 }
 
@@ -378,11 +427,17 @@ function opinionStage(state, work, person, read, seed) {
     const dislikes = matchCount(person.dislikes, tags, false);
     const key = `${work.id}|${person.id}|opinion`;
     const polarity = computePolarity(state, person, work, roll(seed, key + '|pol'));
-    let score = read.interest * 1.2 + 0.5 * (likes + dislikes) + (read.read === 'finished' ? 0.3 : 0) + roll(seed, key) * 0.6;
+    const sm = stanceMatch(state, person, work);
+    // 碰到他在意的议题（无论赞成反对），想法都会更强烈
+    const stake = sm.agree.length + sm.disagree.length + sm.partial.length ? 0.25 * sm.weight : 0;
+    let score = read.interest * 1.2 + 0.5 * (likes + dislikes) + stake + (read.read === 'finished' ? 0.3 : 0) + roll(seed, key) * 0.6;
     let strength = score < 0.6 ? 'none' : score < 1.3 ? 'mild' : 'strong';
     if (read.read === 'skimmed' && strength === 'strong') strength = 'mild';
-    const why = [`欣赏点重叠 ${likes}、反感点重叠 ${dislikes} → ${['偏批评', '褒贬参半', '偏肯定'][polarity + 1]}，${STRENGTH[strength]}`];
-    return { polarity, strength, why };
+    const why = [`欣赏点重叠 ${likes}、反感点重叠 ${dislikes}${sm.score ? `、议题立场 ${sm.score > 0 ? '+' : ''}${Math.round(sm.score * 100) / 100}` : ''} → ${['偏批评', '褒贬参半', '偏肯定'][polarity + 1]}，${STRENGTH[strength]}`];
+    const st = stanceText(sm);
+    if (st) why.push('思想对照：' + st);
+    const ideas = sm.agree.length || sm.disagree.length || sm.partial.length ? { agree: sm.agree, disagree: sm.disagree, partial: sm.partial } : null;
+    return { polarity, strength, why, ideas };
 }
 
 /** 在窗口内找第一个：赶得上截稿、该期还有版面、本人本月还能写的出刊日 */
@@ -511,7 +566,7 @@ function runPipeline(state, s, era, work, person, seed, report, opts = {}) {
             if (op.strength === 'none') op.strength = 'mild';
             op.why = [`已知他的态度（${rec.known.source || '记录'}）：${['偏批评', '褒贬参半', '偏肯定'][op.polarity + 1]}，${STRENGTH[op.strength]}`];
         }
-        rec.polarity = op.polarity; rec.strength = op.strength; rec.why.push(...op.why);
+        rec.polarity = op.polarity; rec.strength = op.strength; rec.ideas = op.ideas || null; rec.why.push(...op.why);
         const ex = expressionStage(state, s, era, work, person, read, op, seed + (via ? '|via' : ''), via);
         rec.expression = ex.expression; rec.why.push(...ex.why);
         for (const e of ex.events) {

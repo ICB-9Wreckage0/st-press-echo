@@ -306,3 +306,33 @@ B.applyBundle(sx, B.normalizeBundle({ persons: [{ name: '甲', likes: ['克制�
 const jia = sx.persons.find(p => p.name === '甲');
 assert.deepEqual(jia.likes, ['克制叙事']); assert.equal(jia.relations.length, 1); assert.equal(jia.relations[0].since, '1890-05-17');
 console.log('以新版为准替换标签和关系 ✓');
+
+// —— v0.9 议题立场 × 作品主张、看法证据 ——
+{
+  const { stanceMatch, computePolarity } = await import('../src/engine.js');
+  const { normalizeOpinion } = await import('../src/analysis.js');
+  const sv = defaultState();
+  B.applyBundle(sv, B.normalizeBundle({
+    persons: [{ name: '米尔博', stances: [{ issue: '死刑', side: '反对', strength: '高' }, { issue: '国家暴力', side: 'con', strength: 2 }] }, { name: '保守派', stances: [{ issue: '国家暴力', side: 'pro', strength: 3 }] }],
+    works: [{ title: '生者与死亡 第三册上编', claims: [{ issue: '死刑', side: '有保留', note: '极端情况保留例外' }, { issue: '国家暴力', side: 'con' }] }],
+  }), { settings: S });
+  const [mir, cons] = sv.persons; const w3 = sv.works[0];
+  const m1 = stanceMatch(sv, mir, w3);
+  assert.deepEqual([m1.agree.length, m1.partial.length, m1.disagree.length], [1, 1, 0]);
+  const m2 = stanceMatch(sv, cons, w3);
+  assert.equal(m2.disagree.length, 1); assert(m2.score < -1);
+  let pos = 0, neg = 0;
+  for (let i = 0; i < 200; i++) { if (computePolarity(sv, mir, w3, i / 200) === 1) pos++; if (computePolarity(sv, cons, w3, i / 200) === -1) neg++; }
+  assert(pos > 80 && neg > 150, `立场应影响褒贬：米尔博偏肯定 ${pos}/200，保守派偏批评 ${neg}/200`);
+  // 再导入同一议题只覆盖给出的字段，不重复
+  B.applyBundle(sv, B.normalizeBundle({ persons: [{ name: '米尔博', stances: [{ issue: '死刑', note: '坚决' }] }] }), { settings: S });
+  assert.equal(sv.persons[0].stances.length, 2); assert.equal(sv.persons[0].stances[0].side, 'con'); assert.equal(sv.persons[0].stances[0].note, '坚决');
+  // 没有证据的维度一律“尚未判断”
+  const op = normalizeOpinion({ summary: 'x', dimensions: { technique: { score: 2, evidence: [] }, ideas: { score: 1, evidence: [{ where: 'K2' }] }, argument: { score: -1, evidence: [{ where: 'K99' }] }, emotion: 1, attention: { score: 2 } },
+    styleNotes: [{ aspect: '解释密度', verdict: '啰唆' }, { aspect: '句子节奏', verdict: '有力', quote: '他沉默了很久' }], disagreements: [{ point: '死刑例外', key: 'true' }], respectsAuthor: 'yes', follow: 'argue' },
+  { keyPoints: [{ id: 'K1' }, { id: 'K2' }] });
+  assert.deepEqual(op.dimensions, { technique: null, ideas: 1, argument: null, emotion: null, attention: 2 });
+  assert.deepEqual(op.unjudged.sort(), ['argument', 'emotion', 'technique']);
+  assert.equal(op.styleNotes.length, 1); assert.equal(op.disagreements[0].key, true);
+  console.log('v0.9 立场与证据 ✓', { pos, neg });
+}

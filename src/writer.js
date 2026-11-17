@@ -7,7 +7,7 @@ import { extractJSON, truncate } from './util.js';
 import { LAYERS, FORMS, CIRCLES, PERIODICITY, byId } from './engine.js';
 import { weekdayZh, yearOf } from './date.js';
 import { eraBrief } from './era.js';
-import { cardText, generateOpinion } from './analysis.js';
+import { cardText, generateOpinion, stanceLines, stylePrefLines, claimLines, RESPECT, FOLLOW } from './analysis.js';
 
 export { eraBrief };
 
@@ -50,6 +50,8 @@ ${eraBrief(era)}
 1. 用${settings.outputLanguage || '中文'}写；可以保留当时的称谓（某某先生）、刊物原名和法语等外文专名。
 2. 文中出现的任何事物、事件、出版物都不得晚于 ${ev.date}；不得提到此日期之后才发生的事。
 3. 只评论下面“作品资料”和“证据卡”里写明的内容，不要编造作品里不存在的情节或引文；具体的褒贬要落在证据卡的条目上。
+3c. 思想上的赞同或反对与文字好坏分开：文中对文笔、节奏、冗长等的评语，只能来自“文字上的感受”里有原文依据的条目；标为“尚未判断”的方面不要下结论。
+3d. 场合决定语气和重点，不改变立场：私信可以直言，公开书评要顾及读者和刊物，论战聚焦分歧，沙龙交谈挑最可争论的部分。
 3b. 文章必须与“写稿人私下的看法”一致（若提供）。允许平淡：短评可以只说值得一读、或只交代出版消息；书评可以认同论证而反对结论；不要为了热闹制造争议，也不要让每个人都写得格外深刻。
 4. ${stanceOnly ? `写稿人“${person.name}”是真实历史人物：不要替他写成第一人称全文，也不要编造他的原话；改为以第三人称写一段“立场摘要”，说明这篇文章大概会从什么角度、提出什么看法。` : '写稿人若为虚构人物，可直接写全文；文章应符合该刊物的风格与政治立场。'}
 5. 篇幅：${LENGTH[ev.layer] || '300–800 字'}。
@@ -67,6 +69,8 @@ ${eraBrief(era)}
         if (person.interests?.length) lines.push(`  关注：${person.interests.join('、')}`);
         if (person.likes?.length) lines.push(`  欣赏：${person.likes.join('、')}`);
         if (person.dislikes?.length) lines.push(`  反感：${person.dislikes.join('、')}`);
+        if (stanceLines(person).length) lines.push(`  议题立场：${stanceLines(person).join('；')}`);
+        if (stylePrefLines(person).length) lines.push(`  文体偏好（倾向，不是规则）：${stylePrefLines(person).join('；')}`);
         if (person.notes) lines.push(`  备注：${person.notes}`);
         lines.push(`  与主角私交：${['陌生', '认识', '朋友', '至交'][person.closeness || 0]}；${pen?.knownBy?.includes(person.id) || person.knowsIdentity ? '知道笔名背后是谁' : '不知道笔名背后是谁'}`);
     } else if (ev.personName) lines.push(`写稿人：${ev.personName}`);
@@ -78,6 +82,7 @@ ${eraBrief(era)}
         lines.push(`《${work.title}》，署名 ${pen?.name || '不详'}，${FORMS[work.form] || ''}，${work.pubDate}${work.endDate ? '–' + work.endDate : ''} 发表于《${byId(state.outlets, work.outletId)?.name || '不详'}》`);
         if (work.themes?.length) lines.push(`题材：${work.themes.join('、')}`);
         if (work.summary) lines.push(`内容：${work.summary}`);
+        if (claimLines(work).length) lines.push(`作品的主张：${claimLines(work).join('；')}`);
         if (work.evidence) { lines.push('证据卡：'); lines.push(cardText(work.evidence, 3000)); }
     }
     const rec = ev.receptionId ? (state.receptions || []).find(r => r.id === ev.receptionId) : null;
@@ -89,6 +94,11 @@ ${eraBrief(era)}
             lines.push(`【写稿人私下的看法】${o.summary || ''}`);
             if (o.appreciates?.length) lines.push(`  欣赏：${o.appreciates.map(x => `${x.point}（${x.evidence || ''}）`).join('；')}`);
             if (o.objections?.length) lines.push(`  质疑：${o.objections.map(x => `${x.point}（${x.evidence || ''}）`).join('；')}`);
+            if (o.agreedPoints?.length) lines.push(`  认可：${o.agreedPoints.map(x => `${x.point}（${x.evidence || ''}）`).join('；')}`);
+            if (o.disagreements?.length) lines.push(`  分歧：${o.disagreements.map(x => `${x.key ? '【关键】' : ''}${x.point}（${x.evidence || ''}）`).join('；')}`);
+            if (o.styleNotes?.length) lines.push(`  文字上的感受：${o.styleNotes.map(x => `${x.aspect}——${x.verdict}「${x.quote}」`).join('；')}`);
+            if (o.unjudged?.length) lines.push(`  尚未判断（缺少原文证据，文中不要对这些方面下结论）：${o.unjudged.map(k => ({ technique: '技巧', ideas: '思想', argument: '论证', emotion: '情感' })[k]).join('、')}`);
+            if (o.respectsAuthor) lines.push(`  对作者：${RESPECT[o.respectsAuthor]}${o.follow ? '；' + FOLLOW[o.follow] : ''}`);
             if (o.understanding && o.understanding !== 'full') lines.push(`  理解程度：${o.understanding === 'partial' ? '只理解了一部分' : '有误读'}${o.misreading ? '——' + o.misreading : ''}`);
         }
     }
