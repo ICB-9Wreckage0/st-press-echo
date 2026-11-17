@@ -7,6 +7,8 @@ const STATE_VERSION = 2;
 
 export const DEFAULT_SETTINGS = {
     enabled: true,
+    fabPos: null, // 悬浮按钮位置 { right, bottom }
+    winRect: null, // 面板位置和大小 { left, top, width, height }
     // 推演
     ...DEFAULT_ENGINE_SETTINGS,
     autoDetectDate: true,

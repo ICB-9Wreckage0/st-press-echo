@@ -16,6 +16,14 @@ const CARD_SCHEMA = `{
   "facts": [{"claim": "文中引用的史实、数字、法条、日期", "where": "出处"}]
 }`;
 
+/** 长文取开头、中段、结尾，而不是只截开头 */
+function sampleText(src, max) {
+    if (src.length <= max) return src;
+    const a = Math.floor(max * 0.45); const m = Math.floor(max * 0.2); const z = max - a - m;
+    const mid = Math.floor(src.length / 2 - m / 2);
+    return `${src.slice(0, a)}\n\n［……中略……］\n\n${src.slice(mid, mid + m)}\n\n［……中略……］\n\n${src.slice(src.length - z)}`;
+}
+
 export async function buildEvidenceCard(work, settings) {
     const src = String(work.sourceText || '').trim();
     if (src.length < 200) throw new Error('请先在作品资料里粘贴原文（至少几百字）');
@@ -26,7 +34,7 @@ export async function buildEvidenceCard(work, settings) {
 3. 原文太长时，优先覆盖开头、转折、结尾和最核心的论证。
 4. 只输出 JSON：
 ${CARD_SCHEMA}`;
-    const user = `作品：《${work.title}》（${FORMS[work.form] || ''}）\n\n原文：\n${truncate(src, 24000)}`;
+    const user = `作品：《${work.title}》（${FORMS[work.form] || ''}）\n\n原文${src.length > 24000 ? `（全文 ${src.length} 字，这里是开头、中段和结尾的节选）` : ''}：\n${sampleText(src, 24000)}`;
     const raw = await callLLM({ system, user, settings, maxTokens: 3500 });
     const card = extractJSON(raw);
     card.builtAt = new Date().toISOString();

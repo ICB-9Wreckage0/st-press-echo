@@ -7,7 +7,10 @@ import {
     READ_STATES, STRENGTH, EXPRESSION, CHANNELS, isMajor, recordManualReading,
 } from './engine.js';
 import { buildEvidenceCard, cardText, generateOpinion } from './analysis.js';
-import { epistolaryAvailable, epistolaryStoryDate, scanLetters, peopleProposals } from './epistolary.js';
+import {
+    epistolaryAvailable, epistolaryStoryDate, scanLetters, peopleProposals, loadBackup, clearBackup, backupInfo, archiveSource,
+    effectiveScope, listArticles, articleBody, letterText,
+} from './epistolary.js';
 import { getSettings, saveSettings, getState, saveState, resetState, replaceState, logLine } from './store.js';
 import { blankOutlet, blankPerson, blankWork, blankPenname, applyProposal, addManualEvent } from './data.js';
 import { writeEvent, buildWriterPrompt } from './writer.js';
@@ -16,6 +19,7 @@ import {
 } from './era.js';
 import { extractFromText, loadWorldbookText } from './extract.js';
 import { callLLM } from './llm.js';
+import { Fab } from './fab.js';
 
 let app = null; // { refreshInjection, detectFromChat }
 let tab = 'overview';
@@ -24,6 +28,7 @@ let busy = '';
 let searchResults = [];
 let ledgerFilter = '';
 let lastReport = null;
+let fab = null;
 
 const toast = (type, msg) => (globalThis.toastr?.[type] ? globalThis.toastr[type](msg, '报刊回声') : console.log('[报刊回声]', msg));
 
@@ -138,6 +143,7 @@ const PERSON_SPEC = [
 ];
 const WORK_SPEC = [
     { key: 'title', label: '作品名' },
+    { key: 'aliases', label: '别名／外文名', type: 'tags', hint: '如 L’Aîné、Le Journal d’Ishida。扫描书信时也按这些找；两三个字的短书名只在带书名号时才算提到' },
     { key: 'pennameId', label: '署名', type: 'select', options: optsOf(s => s.pennames) },
     { key: 'form', label: '形式', type: 'select', options: FORMS, hint: '连载很少进正式书评；成书、小册子才进书评栏' },
     { key: 'outletId', label: '发表刊物', type: 'select', options: optsOf(s => s.outlets) },
@@ -151,34 +157,97 @@ const WORK_SPEC = [
 
 // ———————————— 外壳 ————————————
 
+const TABS = [
+    ['overview', '概览'], ['queue', '待审核'], ['ledger', '账本'], ['reading', '阅读记录'],
+    ['works', '作品'], ['people', '人物与刊物'], ['era', '年代'], ['import', '书信簿与导入'], ['settings', '⚙ 设置'],
+];
+
 export function mountUI(appApi) {
     app = appApi;
     if (document.getElementById('pe-panel')) return;
-    const fab = document.createElement('div');
-    fab.id = 'pe-fab';
-    fab.title = '报刊回声';
-    fab.textContent = '📰';
-    fab.addEventListener('click', () => togglePanel());
-    document.body.appendChild(fab);
+    const s0 = getSettings();
+    fab = new Fab({
+        onClick: () => togglePanel(),
+        getPos: () => getSettings().fabPos,
+        setPos: pos => { getSettings().fabPos = pos; saveSettings(); },
+    });
 
     const panel = document.createElement('div');
     panel.id = 'pe-panel';
     panel.className = 'pe-hidden';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', '报刊回声');
     panel.innerHTML = `
-      <div class="pe-head">
-        <b>📰 报刊回声</b><span id="pe-head-date"></span>
+      <div class="pe-header" title="按住标题栏拖动窗口；双击恢复默认位置">
+        <span class="pe-title">¶ 报刊回声</span>
+        <span class="pe-datechip" id="pe-head-date"></span>
         <span class="pe-busy" id="pe-busy"></span>
-        <button class="pe-x" data-act="close">✕</button>
+        <span class="pe-spacer"></span>
+        <button class="pe-close" data-act="win-reset" title="恢复默认位置和大小">⤢</button>
+        <button class="pe-close" data-act="close" title="关闭">✕</button>
       </div>
-      <div class="pe-tabs">
-        ${[['overview', '概览'], ['queue', '候选审核'], ['ledger', '账本'], ['reading', '阅读记录'], ['works', '作品与笔名'], ['people', '人物与刊物'], ['era', '年代档案'], ['import', '导入书信簿'], ['settings', '设置']]
-        .map(([k, v]) => `<button data-tab="${k}">${v}</button>`).join('')}
-      </div>
-      <div class="pe-body" id="pe-body"></div>`;
+      <nav class="pe-tabs"></nav>
+      <div class="pe-body" id="pe-body"></div>
+      <div class="pe-resize" title="拖动调整大小"></div>`;
     document.body.appendChild(panel);
     panel.addEventListener('click', onClick);
     panel.addEventListener('change', onChange);
+    bindWindow(panel);
+    applyRect(panel, s0.winRect);
+    window.addEventListener('resize', () => applyRect(panel, getSettings().winRect));
     refresh();
+}
+
+// ———— 窗口：拖动标题栏移动，拖右下角调整大小，位置和大小都记住 ————
+
+function defaultRect() {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    if (vw <= 760) return { left: 0, top: Math.round(vh * 0.08), width: vw, height: Math.round(vh * 0.86) };
+    const width = Math.min(860, vw - 40);
+    const height = Math.min(Math.round(vh * 0.86), 960);
+    return { left: Math.round((vw - width) / 2), top: Math.round((vh - height) / 2), width, height };
+}
+
+function applyRect(panel, r) {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const d = defaultRect();
+    const width = Math.min(Math.max(320, r?.width ?? d.width), vw);
+    const height = Math.min(Math.max(240, r?.height ?? d.height), vh);
+    // 至少留 80px 宽、标题栏整条在屏幕里，免得拖丢
+    const left = Math.min(Math.max(80 - width, r?.left ?? d.left), vw - 80);
+    const top = Math.min(Math.max(0, r?.top ?? d.top), vh - 44);
+    Object.assign(panel.style, { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px` });
+    return { left, top, width, height };
+}
+
+function bindWindow(panel) {
+    const head = panel.querySelector('.pe-header');
+    const grip = panel.querySelector('.pe-resize');
+    const rectNow = () => ({ left: panel.offsetLeft, top: panel.offsetTop, width: panel.offsetWidth, height: panel.offsetHeight });
+    const save = r => { getSettings().winRect = r; saveSettings(); };
+    const drag = (el, onMove, skip) => {
+        let st = null;
+        el.addEventListener('pointerdown', e => {
+            if ((e.button != null && e.button !== 0) || skip?.(e)) return;
+            st = { x: e.clientX, y: e.clientY, r: rectNow() };
+            el.setPointerCapture?.(e.pointerId);
+            panel.classList.add('pe-moving');
+            e.preventDefault();
+        });
+        el.addEventListener('pointermove', e => { if (st) onMove(st.r, e.clientX - st.x, e.clientY - st.y); });
+        const end = e => {
+            if (!st) return;
+            st = null;
+            el.releasePointerCapture?.(e.pointerId);
+            panel.classList.remove('pe-moving');
+            save(rectNow());
+        };
+        el.addEventListener('pointerup', end);
+        el.addEventListener('pointercancel', end);
+    };
+    drag(head, (r, dx, dy) => applyRect(panel, { ...r, left: r.left + dx, top: r.top + dy }), e => e.target.closest('button, input, select, a'));
+    drag(grip, (r, dx, dy) => applyRect(panel, { ...r, width: r.width + dx, height: r.height + dy }));
+    head.addEventListener('dblclick', e => { if (e.target.closest('button')) return; save(null); applyRect(panel, null); });
 }
 
 export function togglePanel(force) {
@@ -186,13 +255,14 @@ export function togglePanel(force) {
     if (!p) return;
     const show = force ?? p.classList.contains('pe-hidden');
     p.classList.toggle('pe-hidden', !show);
-    if (show) refresh();
+    fab?.setActive(show);
+    if (show) { applyRect(p, getSettings().winRect); refresh(); }
 }
 
 function setBusy(text) {
     busy = text || '';
     const b = document.getElementById('pe-busy');
-    if (b) b.textContent = busy ? `⏳ ${busy}` : '';
+    if (b) { b.textContent = busy ? `${busy}…` : ''; b.classList.toggle('on', !!busy); }
 }
 
 export function refresh() {
@@ -200,18 +270,23 @@ export function refresh() {
     if (!body) return;
     const st = getState();
     const s = getSettings();
-    document.querySelectorAll('#pe-panel .pe-tabs button').forEach(b => b.classList.toggle('pe-on', b.dataset.tab === tab));
+    const pending = st ? st.ledger.filter(e => e.status === 'candidate').length : 0;
+    const nav = document.querySelector('#pe-panel .pe-tabs');
+    if (nav) nav.innerHTML = TABS.map(([k, v]) => `<button data-tab="${k}" class="${k === tab ? 'active' : ''}">${v}${k === 'queue' && pending ? ` <span class="pe-count">${pending}</span>` : ''}</button>`).join('');
     const hd = document.getElementById('pe-head-date');
-    if (hd) hd.textContent = st?.currentDate ? ` ${st.currentDate}（${weekdayZh(st.currentDate)}）` : '';
-    const fab = document.getElementById('pe-fab');
-    if (fab) {
-        const n = st ? st.ledger.filter(e => e.status === 'candidate').length : 0;
-        fab.dataset.badge = n ? String(n) : '';
-        fab.style.display = s.enabled ? '' : 'none';
-    }
-    if (!st) { body.innerHTML = '<p>请先打开一个聊天。</p>'; return; }
+    if (hd) { hd.textContent = st?.currentDate ? `${st.currentDate} · ${weekdayZh(st.currentDate)}` : '未设定日期'; hd.classList.toggle('pe-unset', !st?.currentDate); }
+    fab?.setBadge(pending);
+    fab?.setVisible(!!s.enabled);
+    if (!st) { body.innerHTML = '<div class="pe-empty">请先打开一个聊天。</div>'; return; }
     const render = { overview, queue, ledger, reading, works, people, era, importTab, settings }[tab === 'import' ? 'importTab' : tab];
+    const y = body.scrollTop;
+    const active = document.activeElement;
+    if (active && body.contains(active)) active.blur();
     body.innerHTML = render(st, s);
+    // 统一成酒馆原生控件样式（与书信簿一致）
+    body.querySelectorAll('button').forEach(b => b.classList.add('menu_button'));
+    body.querySelectorAll('input[type=text], input[type=number], input[type=password], select, textarea').forEach(x => x.classList.add('text_pole'));
+    body.scrollTop = y;
 }
 
 function commit(msg) {
@@ -228,99 +303,130 @@ function overview(st, s) {
     const cand = st.ledger.filter(e => e.status === 'candidate').length;
     const sched = st.ledger.filter(e => e.status === 'scheduled').length;
     const appr = st.ledger.filter(e => e.status === 'approved').length;
+    const readers = (st.receptions || []).filter(r => ['skimmed', 'finished'].includes(r.read) && (!r.readDate || !st.currentDate || r.readDate <= st.currentDate)).length;
+    const d = st.currentDate;
+    const bigDate = d ? `${+d.slice(0, 4)} 年 ${+d.slice(5, 7)} 月 ${+d.slice(8, 10)} 日` : '尚未设定故事日期';
+    const epiD = epistolaryAvailable() ? epistolaryStoryDate() : null;
+    const recent = st.ledger.filter(e => e.status === 'approved').slice(-4).reverse();
     const pens = st.pennames.map(p => {
         const rep = st.reputation[p.id] || {};
-        return `<tr><td>${h(p.name)}</td>${Object.keys(CIRCLES).map(c => `<td title="${(rep[c] || 0).toFixed(2)}">${repLabel(rep[c] || 0)}</td>`).join('')}</tr>`;
+        return `<tr><td><b>${h(p.name)}</b>${p.publicIdentityKnown ? ' <span class="pe-chip">身份已公开</span>' : ''}</td>${Object.keys(CIRCLES).map(c => `<td title="${(rep[c] || 0).toFixed(2)}" class="pe-rep pe-rep${Math.sign(Math.round((rep[c] || 0) * 2))}">${repLabel(rep[c] || 0)}</td>`).join('')}</tr>`;
     }).join('');
-    const rumors = (st.rumors || []).map(r => `<li>${h(r.text)} <small>热度 ${Math.round(r.strength * 100)}%</small>
-        <button class="pe-mini" data-act="rumor-pin" data-id="${r.id}">${r.pinned ? '取消固定' : '固定'}</button>
-        <button class="pe-mini" data-act="rumor-del" data-id="${r.id}">删除</button></li>`).join('');
+    const rumors = (st.rumors || []).map(r => `<div class="pe-card pe-card-slim"><div class="pe-card-main">${h(r.text)}
+        <div class="pe-meter" title="热度 ${Math.round(r.strength * 100)}%"><i style="width:${Math.round(r.strength * 100)}%"></i></div></div>
+        <div class="pe-card-actions"><button class="pe-mini" data-act="rumor-pin" data-id="${r.id}">${r.pinned ? '取消固定' : '固定'}</button>
+        <button class="pe-mini" data-act="rumor-del" data-id="${r.id}">删除</button></div></div>`).join('');
     return `
-    <section>
-      <h4>故事日期</h4>
-      <div class="pe-row">
-        <input id="pe-date" type="text" value="${h(st.currentDate || '')}" placeholder="YYYY-MM-DD" style="width:9em">
-        <button data-act="date-set">设为当前（不推演）</button>
-        <button data-act="date-advance">推进到此日期</button>
+    <div class="pe-hero">
+      <div class="pe-hero-main">
+        <div class="pe-hero-date">${h(bigDate)}</div>
+        <div class="pe-hero-sub">${d ? h(weekdayZh(d)) + ' · ' : ''}${h(st.era?.place || '地点未设定')} · 年代档案 ${era ? `<span class="pe-ok">已生成</span>` : `<a data-tab-go="era" class="pe-link">未生成，去生成</a>`}</div>
+      </div>
+      <div class="pe-hero-side">
+        ${!d ? '<div class="pe-muted">聊天里出现日期时会自动识别，也可以在下面手动设定。</div>' : ''}
+        ${st.detectedDate ? `<div class="pe-callout">识别到新日期 <b>${h(st.detectedDate)}</b><button class="pe-primary" data-act="advance-detected">推进到这一天</button></div>` : ''}
+        ${epiD && epiD !== d && (!d || epiD > d) ? `<div class="pe-callout">书信簿剧情日期 <b>${h(epiD)}</b><button class="pe-primary" data-act="epi-date-adopt">跟上</button></div>` : ''}
+      </div>
+    </div>
+    ${st.weekdayWarning ? `<div class="pe-callout pe-callout-warn">⚠ ${h(st.weekdayWarning)} <button class="pe-mini" data-act="clear-wd">知道了</button></div>` : ''}
+    <div class="pe-stats">
+      <div class="pe-stat ${cand ? 'pe-stat-hot' : ''}" data-tab-go="queue"><b>${cand}</b><span>待你审核</span></div>
+      <div class="pe-stat" data-tab-go="ledger"><b>${appr}</b><span>已见报 / 已收到</span></div>
+      <div class="pe-stat" title="到期前不显示内容，避免剧透"><b>${sched}</b><span>已排期，未到期</span></div>
+      <div class="pe-stat" data-tab-go="reading"><b>${readers}</b><span>读过的人次</span></div>
+    </div>
+    ${lastReport ? `<div class="pe-muted pe-report">上次推进 ${h(lastReport.from || '起点')} → ${h(lastReport.to)}：${lastReport.newCandidates.filter(x => x.status === 'candidate').length} 条待审核，${lastReport.autoApproved.length} 条次要反响自动入账，新排期 ${lastReport.scheduled} 条。</div>` : ''}
+    ${cand ? `<div class="pe-callout pe-callout-accent">有 <b>${cand}</b> 条反响等你确认。<button class="pe-primary" data-tab-go="queue">去审核</button></div>` : ''}
+
+    <h4>最近入账</h4>
+    ${recent.length ? recent.map(e => evCard(st, e, '', { compact: true })).join('') + '<div class="pe-more"><a class="pe-link" data-tab-go="ledger">查看全部账本 →</a></div>' : '<div class="pe-empty-sm">还没有入账的反响。</div>'}
+
+    <h4>笔名声誉 <small class="pe-muted">只由已入账的公开反响改变</small></h4>
+    ${st.pennames.length ? `<div class="pe-table-wrap"><table class="pe-table"><tr><th></th>${Object.values(CIRCLES).map(c => `<th>${c}</th>`).join('')}</tr>${pens}</table></div>` : '<div class="pe-empty-sm">还没有笔名。<a class="pe-link" data-tab-go="works">去添加</a></div>'}
+
+    <h4>坊间传闻</h4>
+    ${rumors || '<div class="pe-empty-sm">暂无。</div>'}
+    <div class="pe-toolbar"><input id="pe-rumor" type="text" placeholder="手动添加一条传闻" class="pe-grow"><button data-act="rumor-add">添加</button></div>
+
+    <details class="pe-fold"><summary>手动调整日期与地点</summary>
+      <div class="pe-toolbar">
+        <input id="pe-date" type="text" value="${h(d || '')}" placeholder="YYYY-MM-DD" style="width:9em">
+        <button class="pe-primary" data-act="date-advance">推进到此日期</button>
+        <button data-act="date-set" title="只改日期，不产生新的推演">设为当前（不推演）</button>
         <button data-act="date-detect">从最新消息识别</button>
       </div>
-      ${st.weekdayWarning ? `<p class="pe-warn">⚠ ${h(st.weekdayWarning)} <button class="pe-mini" data-act="clear-wd">知道了</button></p>` : ''}
-      ${st.detectedDate ? `<p class="pe-note">检测到新日期 ${h(st.detectedDate)}（自动推进已关闭）<button class="pe-mini" data-act="advance-detected">推进</button></p>` : ''}
-      <small>日期只会向前推进。正文里提到的较早日期（例如回忆往事）不会把时间拨回去。</small>
-    </section>
-    <section>
-      <h4>年代与地点</h4>
-      <div class="pe-row">
-        <span>年份：<b>${h(st.era?.year ?? '—')}</b></span>
+      <div class="pe-muted">日期只会向前推进；正文里提到的较早日期（例如回忆往事）不会把时间拨回去。改写或删除消息会自动回滚。</div>
+      <div class="pe-toolbar">
+        <span>年份 <b>${h(st.era?.year ?? '—')}</b></span>
         <input id="pe-place" type="text" value="${h(st.era?.place || '')}" placeholder="如：法国·巴黎" style="width:10em">
         <button data-act="place-save">保存地点</button>
         <button data-act="place-guess">从聊天猜测</button>
-        <span>年代档案：${era ? `✅ ${h(era.asOf || era.year)}` : '❌ 未生成'} <button class="pe-mini" data-tab-go="era">去生成</button></span>
       </div>
-    </section>
-    <section>
-      <h4>状态</h4>
-      <p>待审核候选 <b>${cand}</b> 条 · 已批准 <b>${appr}</b> 条 · 已排期但未到期 <b>${sched}</b> 条（到期前不显示内容，避免剧透）</p>
-      ${lastReport ? `<p class="pe-note">上次推进 ${h(lastReport.from || '')} → ${h(lastReport.to)}：新增阅读记录 ${lastReport.receptions} 条，新排期 ${lastReport.scheduled} 条，到期 ${lastReport.newCandidates.length} 条（其中自动通过 ${lastReport.autoApproved.length} 条）。</p>` : ''}
-      ${epistolaryAvailable() ? `<p><small>书信簿剧情日期：${h(epistolaryStoryDate() || '未设定')}${epistolaryStoryDate() && epistolaryStoryDate() !== st.currentDate ? ` <button class="pe-mini" data-act="epi-date-adopt">推进到这一天</button>` : ''}</small></p>` : ''}
-    </section>
-    <section>
-      <h4>笔名声誉（只由“已批准的公开反响”改变）</h4>
-      ${st.pennames.length ? `<table class="pe-table"><tr><th>笔名</th>${Object.values(CIRCLES).map(c => `<th>${c}</th>`).join('')}</tr>${pens}</table>` : '<p>还没有笔名。去“作品与笔名”添加。</p>'}
-    </section>
-    <section>
-      <h4>坊间传闻</h4>
-      ${rumors ? `<ul class="pe-list">${rumors}</ul>` : '<p>暂无。</p>'}
-      <div class="pe-row"><input id="pe-rumor" type="text" placeholder="手动添加一条传闻" style="flex:1"><button data-act="rumor-add">添加</button></div>
-    </section>
-    <section>
-      <h4>日志</h4>
-      <ul class="pe-log">${(st.log || []).slice(0, 15).map(l => `<li><small>${h(l.date || '')}</small> ${h(l.text)}</li>`).join('')}</ul>
-    </section>`;
+    </details>
+    <details class="pe-fold"><summary>日志</summary>
+      <ul class="pe-log">${(st.log || []).slice(0, 30).map(l => `<li><span class="pe-muted">${h(l.date || '')}</span> ${h(l.text)}</li>`).join('')}</ul>
+    </details>`;
 }
 
-function evLine(st, e) {
+/** 一条反响的卡片。actions 是右侧按钮的 HTML */
+function evCard(st, e, actions = '', { compact = false } = {}) {
     const person = byId(st.persons, e.personId);
     const outlet = byId(st.outlets, e.outletId);
     const work = byId(st.works, e.workId);
-    const pol = e.layer === 'reader_letters' ? `约 ${e.count} 封` : e.layer === 'mentions' ? `约 ${e.count} 条` : `<span class="pe-pol pe-pol${e.polarity}">${POLS[e.polarity]}</span>`;
-    return `<b>${h(e.date)}</b> <small>${weekdayZh(e.date)}</small> · <span class="pe-layer">${h(LAYERS[e.layer]?.label || e.layer)}</span>
-      · ${outlet ? '《' + h(outlet.name) + '》' : ''}${h(person?.name || e.personName || '')}
-      · ${work ? '评《' + h(work.title) + '》' : ''} · ${pol}${e.p != null ? ` <small title="推演概率">p=${e.p}</small>` : ''}
-      ${e.origin === 'manual' ? '<small class="pe-tag">手动/已确认</small>' : ''}${e.auto ? '<small class="pe-tag">自动通过</small>' : ''}${isMajor(st, e) ? '<small class="pe-tag pe-major">重要</small>' : ''}${e.reactsTo ? '<small class="pe-tag">回应前文</small>' : ''}
-      ${e.why?.length ? `<details class="pe-why"><summary>为什么发生？</summary><ol>${e.why.map(w => `<li>${h(w)}</li>`).join('')}</ol></details>` : ''}
-      ${(e.flags || []).map(f => `<div class="pe-flag">⚠ ${h(f)}</div>`).join('')}`;
+    const agg = e.layer === 'reader_letters' || e.layer === 'mentions';
+    const pol = agg ? `<span class="pe-chip">${e.layer === 'reader_letters' ? `约 ${e.count} 封` : `约 ${e.count} 条`}</span>` : `<span class="pe-chip pe-pol pe-pol${e.polarity}">${POLS[e.polarity]}</span>`;
+    const major = isMajor(st, e);
+    const who = [outlet ? `《${h(outlet.name)}》` : '', h(person?.name || e.personName || '')].filter(Boolean).join(' ');
+    const whoText = who || (e.layer === 'mentions' ? '各报' : e.layer === 'reader_letters' ? '读者' : '');
+    const sum = e.text?.summary || '';
+    return `<div class="pe-card ${major ? 'pe-card-major' : ''} pe-edge${agg ? 'n' : e.polarity}">
+      <div class="pe-card-main">
+        <div class="pe-card-top">
+          <span class="pe-card-date">${h(e.date)}</span><span class="pe-muted">${weekdayZh(e.date)}</span>
+          <span class="pe-chip pe-chip-layer">${h(LAYERS[e.layer]?.label || e.layer)}</span>${pol}
+          ${major && e.status === 'candidate' ? '<span class="pe-chip pe-chip-major">需确认</span>' : ''}
+          ${e.origin === 'manual' ? '<span class="pe-chip">手动</span>' : ''}${e.auto ? '<span class="pe-chip">自动入账</span>' : ''}${e.reactsTo ? '<span class="pe-chip">回应前文</span>' : ''}${e.epiLetterId ? '<span class="pe-chip">来自书信簿</span>' : ''}
+        </div>
+        <div class="pe-card-title">${whoText || '<span class="pe-muted">（未指定）</span>'}${work ? ` <span class="pe-muted">评</span> 《${h(work.title)}》` : ''}</div>
+        ${e.text?.title ? `<div class="pe-card-sub">「${h(e.text.title)}」${e.text.byline ? ` <span class="pe-muted">${h(e.text.byline)}</span>` : ''}</div>` : ''}
+        ${sum ? `<div class="pe-card-sum">${h(compact ? truncate(sum, 90) : sum)}</div>` : ''}
+        ${!compact && e.why?.length ? `<details class="pe-why"><summary>为什么会发生？</summary><ol>${e.why.map(w => `<li>${h(w)}</li>`).join('')}</ol></details>` : ''}
+        ${!compact ? (e.flags || []).filter(f => f !== '手动录入').map(f => `<div class="pe-flag">⚠ ${h(f)}</div>`).join('') : ''}
+        ${!compact && e.text?.body ? `<details class="pe-why"><summary>正文</summary><div class="pe-text">${h(e.text.body).replace(/\n/g, '<br>')}</div></details>` : ''}
+      </div>
+      ${actions ? `<div class="pe-card-actions">${actions}</div>` : ''}
+    </div>`;
 }
 
 function queue(st) {
     const cands = st.ledger.filter(e => e.status === 'candidate');
+    const majors = cands.filter(e => isMajor(st, e));
+    const minors = cands.filter(e => !isMajor(st, e));
     const unwritten = st.ledger.filter(e => e.status === 'approved' && !e.text?.body && e.layer !== 'reader_letters' && e.layer !== 'mentions');
     const sched = st.ledger.filter(e => e.status === 'scheduled').length;
     const LAYER_OPTS = Object.fromEntries(Object.entries(LAYERS).map(([k, v]) => [k, v.label]));
+    const act = e => `<button class="pe-primary" data-act="approve" data-id="${e.id}">入账</button>
+          <button data-act="approve-write" data-id="${e.id}">入账并写稿</button>
+          <button data-act="reject" data-id="${e.id}">驳回</button>
+          <details class="pe-more-acts"><summary>调整</summary>
+            <button data-act="ev-date" data-id="${e.id}">改日期</button>
+            <button data-act="ev-pol" data-id="${e.id}">改褒贬</button>
+            <button data-act="ev-note" data-id="${e.id}">写稿要求</button></details>`;
     return `
-    <section>
-      <h4>待审核候选（${cands.length}）</h4>
-      <p><small>候选由规则推演产生：接触 → 阅读 → 看法 → 表达，公开发表还要赶上截稿、有版面。批准后才计入声誉、进入主对话。设置里开了“次要事件自动通过”时，这里主要剩下正式书评、论战和真实人物的私信。</small></p>
-      ${cands.length ? `<div class="pe-row"><button data-act="approve-all">全部批准</button><button data-act="reject-all">全部驳回</button></div>` : ''}
-      <ul class="pe-list">${cands.map(e => `<li>${evLine(st, e)}
-        <div class="pe-row">
-          <button class="pe-mini" data-act="approve" data-id="${e.id}">批准</button>
-          <button class="pe-mini" data-act="approve-write" data-id="${e.id}">批准并写稿</button>
-          <button class="pe-mini" data-act="reject" data-id="${e.id}">驳回</button>
-          <button class="pe-mini" data-act="ev-date" data-id="${e.id}">改日期</button>
-          <button class="pe-mini" data-act="ev-pol" data-id="${e.id}">改褒贬</button>
-          <button class="pe-mini" data-act="ev-note" data-id="${e.id}">写稿要求</button>
-        </div></li>`).join('') || '<li>暂无。故事日期推进后会自动产生。</li>'}</ul>
-      ${sched ? `<p><small>另有 ${sched} 条已排期，到期后才会出现。</small></p>` : ''}
-    </section>
-    <section>
-      <h4>已批准、尚未写稿（${unwritten.length}）</h4>
-      ${unwritten.length ? `<div class="pe-row"><button data-act="write-all">逐条写稿</button></div>` : ''}
-      <ul class="pe-list">${unwritten.map(e => `<li>${evLine(st, e)}<div class="pe-row"><button class="pe-mini" data-act="write" data-id="${e.id}">写稿</button><button class="pe-mini" data-act="preview-prompt" data-id="${e.id}">查看提示词</button></div></li>`).join('') || '<li>无</li>'}</ul>
-    </section>
-    <section>
-      <h4>手动录入一条反响</h4>
-      <p><small>用于录入模拟中已经确认发生的事（例如某人某日的私信），或你想强制安排的评论。</small></p>
+    <h4>需要你确认 <span class="pe-count">${cands.length}</span>
+      ${cands.length ? `<span class="pe-spacer"></span><button data-act="approve-all">全部入账</button><button data-act="reject-all">全部驳回</button>` : ''}</h4>
+    <div class="pe-muted">入账后才计入声誉、进入主对话。正式书评、论战和真实人物的私信总在这里等你；次要事件默认自动入账（可在设置里改）。</div>
+    ${majors.map(e => evCard(st, e, act(e))).join('')}
+    ${minors.length ? `${majors.length ? '<h5>次要事件</h5>' : ''}${minors.map(e => evCard(st, e, act(e))).join('')}` : ''}
+    ${!cands.length ? '<div class="pe-empty">没有待审核的反响。故事日期推进后会自动产生。</div>' : ''}
+    ${sched ? `<div class="pe-muted">另有 ${sched} 条已排期，到期后才会出现。</div>` : ''}
+
+    <h4>已入账、尚未写稿 <span class="pe-count pe-count-dim">${unwritten.length}</span>
+      ${unwritten.length ? `<span class="pe-spacer"></span><button data-act="write-all">逐条写稿</button>` : ''}</h4>
+    ${unwritten.map(e => evCard(st, e, `<button class="pe-primary" data-act="write" data-id="${e.id}">写稿</button><button data-act="preview-prompt" data-id="${e.id}">看提示词</button>`)).join('') || '<div class="pe-empty-sm">无</div>'}
+
+    <details class="pe-fold"><summary>手动录入一条反响</summary>
+      <div class="pe-muted">录入模拟中已经确认发生的事（例如某人某日的私信），或你想强制安排的评论。</div>
       <div class="pe-form" id="pe-manual">
         ${fieldHtml({ key: 'date', label: '日期', placeholder: 'YYYY-MM-DD' }, st.currentDate)}
         ${fieldHtml({ key: 'layer', label: '层级', type: 'select', options: LAYER_OPTS }, 'notice')}
@@ -330,34 +436,29 @@ function queue(st) {
         ${fieldHtml({ key: 'polarity', label: '褒贬', type: 'select', options: POLS }, 0)}
         ${fieldHtml({ key: 'count', label: '来信数量（仅读者来信）', type: 'number' }, '')}
         ${fieldHtml({ key: 'summary', label: '内容概要', type: 'textarea', rows: 2 }, '')}
-        ${fieldHtml({ key: 'approved', label: '直接记为已批准', type: 'checkbox' }, true)}
+        ${fieldHtml({ key: 'approved', label: '直接入账', type: 'checkbox' }, true)}
       </div>
-      <button data-act="manual-add">录入</button>
-    </section>`;
+      <button class="pe-primary" data-act="manual-add">录入</button>
+    </details>`;
 }
 
 function ledger(st) {
-    const items = st.ledger.filter(e => e.status === 'approved' && (!ledgerFilter || e.workId === ledgerFilter));
+    const items = st.ledger.filter(e => e.status === 'approved' && (!ledgerFilter || e.workId === ledgerFilter)).slice().reverse();
     const wopts = optsOf(x => x.works, 'title')(st);
-    wopts[''] = '（全部作品）';
+    wopts[''] = '全部作品';
     return `
-    <section>
-      <div class="pe-row"><span>筛选：</span><select id="pe-ledger-filter">${Object.entries(wopts).map(([k, v]) => `<option value="${h(k)}" ${k === ledgerFilter ? 'selected' : ''}>${h(v)}</option>`).join('')}</select>
-      <button data-act="export-ledger">导出为文本</button></div>
-      <ul class="pe-list">${items.map(e => `<li>${evLine(st, e)}
-        ${e.text ? `<details><summary>${h(e.text.title || '（无标题）')} <small>${h(e.text.byline || '')} ${e.text.section ? '· ' + h(e.text.section) : ''}</small>${e.text.stanceOnly ? ' <small class="pe-tag">立场摘要</small>' : ''}</summary>
-            <div class="pe-text">${h(e.text.body || '').replace(/\n/g, '<br>')}</div>
-            <p><small>概要：${h(e.text.summary || '')}</small></p></details>` : ''}
-        <div class="pe-row">
-          <button class="pe-mini" data-act="write" data-id="${e.id}">${e.text?.body ? '重写' : '写稿'}</button>
-          <button class="pe-mini" data-act="ev-summary" data-id="${e.id}">改概要</button>
-          <button class="pe-mini" data-act="ev-reply" data-id="${e.id}">安排一篇回应</button>
-          <button class="pe-mini" data-act="unapprove" data-id="${e.id}">撤回批准</button>
-          <button class="pe-mini" data-act="ev-del" data-id="${e.id}">删除</button>
-        </div></li>`).join('') || '<li>还没有已批准的反响。</li>'}</ul>
-    </section>`;
+    <div class="pe-toolbar">
+      <select id="pe-ledger-filter">${Object.entries(wopts).map(([k, v]) => `<option value="${h(k)}" ${k === ledgerFilter ? 'selected' : ''}>${h(v)}</option>`).join('')}</select>
+      <span class="pe-muted">${items.length} 条，最新的在前</span><span class="pe-spacer"></span>
+      <button data-act="export-ledger">导出为文本</button>
+    </div>
+    ${items.map(e => evCard(st, e, `<button ${e.text?.body || ['mentions', 'reader_letters'].includes(e.layer) ? '' : 'class="pe-primary"'} data-act="write" data-id="${e.id}">${e.text?.body ? '重写' : '写稿'}</button>
+        <details class="pe-more-acts"><summary>更多</summary>
+          <button data-act="ev-summary" data-id="${e.id}">改概要</button>
+          <button data-act="ev-reply" data-id="${e.id}">安排一篇回应</button>
+          <button data-act="unapprove" data-id="${e.id}">撤回入账</button>
+          <button data-act="ev-del" data-id="${e.id}">删除</button></details>`)).join('') || '<div class="pe-empty">还没有入账的反响。</div>'}`;
 }
-
 
 function reading(st) {
     const wopts = optsOf(x => x.works, 'title')(st);
@@ -402,7 +503,7 @@ function reading(st) {
         ${fieldHtml({ key: 'read', label: '读到什么程度', type: 'select', options: { finished: '读完', skimmed: '读了一部分' } }, 'finished')}
         ${fieldHtml({ key: 'note', label: '依据' }, '')}
       </div>
-      <button data-act="manual-read">记录</button>
+      <button class="pe-primary" data-act="manual-read">记录</button>
     </section>`;
 }
 
@@ -411,15 +512,15 @@ function listBlock(title, kind, list, spec, st, labelFn) {
     const obj = isEdit ? (list.find(x => x.id === editing.id) || editing.draft) : null;
     return `
     <section>
-      <h4>${title}（${list.length}）</h4>
+      <h4>${title} <span class="pe-count pe-count-dim">${list.length}</span></h4>
       ${isEdit ? `<div class="pe-editor" data-kind="${kind}">${formHtml(spec, obj, st)}
-          <div class="pe-row"><button data-act="save-item" data-kind="${kind}">保存</button><button data-act="cancel-edit">取消</button>
+          <div class="pe-row"><button class="pe-primary" data-act="save-item" data-kind="${kind}">保存</button><button data-act="cancel-edit">取消</button>
           ${kind === 'work' && obj && list.some(x => x.id === obj.id) ? `<button data-act="reroll-work" data-id="${obj.id}" title="资料改动后，重新推演尚未批准的回应">按新资料重推</button><button data-act="gen-card" data-id="${obj.id}" title="先保存原文，再生成">生成证据卡</button>` : ''}</div>
-          ${kind === 'work' && obj?.evidence ? `<details><summary>证据卡（${h(obj.evidence.builtAt?.slice(0, 10) || '')}，${(obj.evidence.keyPoints || []).length} 条）</summary><div class="pe-text">${h(cardText(obj.evidence, 6000)).replace(/\n/g, '<br>')}</div></details>` : ''}</div>`
-        : `<button data-act="new-item" data-kind="${kind}">＋ 新增</button>`}
-      <table class="pe-table">${list.map(x => `<tr><td>${labelFn(x)}</td><td class="pe-nowrap">
-        <button class="pe-mini" data-act="edit-item" data-kind="${kind}" data-id="${x.id}">编辑</button>
-        <button class="pe-mini" data-act="del-item" data-kind="${kind}" data-id="${x.id}">删除</button></td></tr>`).join('')}</table>
+          ${kind === 'work' && obj?.evidence ? `<details><summary>证据卡（${h(obj.evidence.builtAt?.slice(0, 10) || '')}，${(obj.evidence.keyPoints || []).length} 条${obj.evidence.stale ? '，原文已更新，建议重新生成' : ''}）</summary><div class="pe-text">${h(cardText(obj.evidence, 6000)).replace(/\n/g, '<br>')}</div></details>` : ''}</div>`
+        : `<div class="pe-toolbar"><button data-act="new-item" data-kind="${kind}">＋ 新增${title}</button></div>`}
+      ${list.map(x => `<div class="pe-card pe-card-slim ${isEdit && editing.id === x.id ? 'pe-card-editing' : ''}"><div class="pe-card-main">${labelFn(x)}</div><div class="pe-card-actions pe-card-actions-row">
+        <button data-act="edit-item" data-kind="${kind}" data-id="${x.id}">编辑</button>
+        <button data-act="del-item" data-kind="${kind}" data-id="${x.id}">删除</button></div></div>`).join('') || '<div class="pe-empty-sm">还没有。</div>'}
     </section>`;
 }
 
@@ -443,7 +544,7 @@ function era(st, s) {
       <h4>年代档案 ${prof ? `<small>（截至 ${h(prof.asOf || prof.year)}，资料：${h((prof.sources || []).join('，') || '模型知识')}）</small>` : ''}</h4>
       ${prof ? `${sec('概况', prof.summary)}${sec('货币', prof.currency)}${sec('报刊格局', prof.pressLandscape)}${sec('活跃评论家', prof.critics)}${sec('潮流', prof.movements)}${sec('近期大事', prof.recentEvents)}${sec('文体', prof.styleNotes)}${sec('时代用语', prof.vocabulary)}${sec('禁止出现', prof.forbiddenAnachronisms)}${sec('待核', prof.uncertain)}` : '<p>尚未生成。生成后，写稿和注入都会按这个年代约束。</p>'}
       <div class="pe-row">
-        <button data-act="era-build" ${s.wikiEnabled ? '' : 'disabled'}>检索维基百科并生成</button>
+        <button class="pe-primary" data-act="era-build" ${s.wikiEnabled ? '' : 'disabled'}>检索维基百科并生成</button>
         <button data-act="era-build-nowiki">仅用模型知识生成</button>
         ${prof ? '<button data-act="era-propose">把其中的刊物与评论家加入待合并</button><button data-act="era-edit">编辑 JSON</button><button data-act="era-clear">清除</button>' : ''}
       </div>
@@ -475,33 +576,63 @@ function importTab(st) {
     const kindName = { penname: '笔名', outlet: '刊物', person: '人物', work: '作品', reaction: '已发生反响' };
     const pend = st.pendingMerge.map((p, i) => ({ p, i })).sort((a, b) => order[a.p.kind] - order[b.p.kind]);
     const epi = epistolaryAvailable();
+    const src = archiveSource();
+    const binfo = backupInfo();
     const hints = (st.epiHints || []).filter(x => !x.handled);
+    const scope = epi ? effectiveScope(st) : '';
+    const arts = epi ? listArticles(st) : [];
+    const workOpts = sel => `<option value="">（选择作品）</option>${st.works.map(w => `<option value="${h(w.id)}" ${w.id === sel ? 'selected' : ''}>${h(w.title)}</option>`).join('')}`;
+    const dirName = { from_user: '主角寄出', to_user: '寄给主角', third_party: '第三方之间' };
     return `
     <section>
       <h4>书信簿（st-epistolary）联动</h4>
-      ${epi ? `<p><small>已检测到书信簿。这里只读取，不会改动书信簿的档案。信里提到作品的地方只作为<b>辅助线索</b>，默认不算已发生的反响，由你逐条决定。</small></p>
-        <div class="pe-row"><button data-act="epi-scan">扫描信件中的作品线索</button><button data-act="epi-people">把书信簿人物加入待合并</button>
+      <p><small>只读取，不会改动书信簿。信里提到作品的地方只作为<b>辅助线索</b>，默认不算已发生的反响，由你逐条决定。</small></p>
+      <div class="pe-row">
+        <span>档案来源：${src === 'backup' ? `备份文件 <b>${h(binfo.fileName || '')}</b>` : src === 'live' ? '书信簿插件（实时）' : '无'}</span>
+        <label class="menu_button pe-file">读取书信簿备份（.json）<input type="file" id="pe-epi-file" accept=".json,application/json" hidden></label>
+        ${src === 'backup' ? '<button class="pe-mini" data-act="epi-unload">卸下备份</button>' : ''}
+      </div>
+      ${binfo ? `<p><small>备份：信 ${binfo.letters} 封，便条/文章 ${binfo.notes} 篇，人物档案 ${binfo.people} 人；日期 ${h(binfo.from || '?')} – ${h(binfo.to || '?')}${binfo.exportedAt ? `；导出于 ${h(binfo.exportedAt.slice(0, 10))}` : ''}。备份只放在内存里，刷新页面后要重新读取（已处理的线索和已导入的原文会保留）。</small></p>` : ''}
+      ${binfo && binfo.scopes.length > 1 ? `<div class="pe-row"><span>角色卡范围：</span><select id="pe-epi-scope">
+          <option value="*" ${scope === '*' ? 'selected' : ''}>全部</option>
+          ${binfo.scopes.map(x => `<option value="${h(x.key)}" ${x.key === scope ? 'selected' : ''}>${h(x.name)}（${x.count}）</option>`).join('')}</select></div>` : ''}
+      ${epi ? `<div class="pe-row"><button class="pe-primary" data-act="epi-scan">扫描信件中的作品线索</button><button data-act="epi-people">把书信簿人物和通信对象加入待合并</button>
         <small>书信簿剧情日期：${h(epistolaryStoryDate() || '未设定')}</small></div>
-        <ul class="pe-list">${hints.map(x => `<li><b>${h(x.date || '日期不详')}</b> ${h(x.code)} ${h(x.author)} → ${h((x.recipients || []).join('、'))}
+        <p><small>只扫描日期不晚于当前故事日期（${h(st.currentDate || '未设定')}）的信。日期取写信日期，没有就取书信簿事件里的寄出日期；主角寄出的信按对方读到的日期算。</small></p>
+        <ul class="pe-list">${hints.map(x => `<li><b>${h(x.date || '日期不详')}</b> ${h(x.code)} ${h(x.author)} → ${h((x.recipients || []).join('、') || '—')} <small class="pe-tag">${dirName[x.direction] || ''}</small>
           · ${x.workTitle ? '《' + h(x.workTitle) + '》' : '笔名 ' + h(x.penname)}
-          <div class="pe-evi">${h(x.excerpt)}</div><small>${h(x.suggestion)}${x.personId ? '' : '（此人还不在人物列表里）'}</small>
+          <div class="pe-evi">${h(x.excerpt)}</div><small>${h(x.suggestion)}${x.personId || !x.personName ? '' : '（此人还不在人物列表里）'}</small>
           <div class="pe-row">
             ${x.workId && x.personId && /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? `<button class="pe-mini" data-act="epi-hint-read" data-id="${h(x.id)}">${x.direction === 'from_user' ? '记为对方经书信得知并读过' : '记为此人已读过'}</button>` : ''}
             ${x.workId && x.personId && x.direction === 'to_user' && /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? `<button class="pe-mini" data-act="epi-hint-letter" data-id="${h(x.id)}">记为一封已发生的私信反响</button>` : ''}
+            <button class="pe-mini" data-act="epi-hint-extract" data-id="${h(x.id)}" title="把整封信放进下面的抽取文本框，例如剪报、长篇评论信">送去抽取</button>
             <button class="pe-mini" data-act="epi-hint-ignore" data-id="${h(x.id)}">忽略</button>
-          </div></li>`).join('') || '<li>暂无线索。</li>'}</ul>`
-        : '<p><small>没有检测到书信簿插件。装了书信簿的话，这里可以从信件里找到“谁在信里谈过哪部作品”的线索。</small></p>'}
+          </div></li>`).join('') || '<li>暂无线索。</li>'}</ul>` : ''}
     </section>
+    ${arts.length ? `<section>
+      <h4>书信簿里的文章稿（${arts.length} 篇）</h4>
+      <p><small>放在“文章”文件夹里的稿子。可以导入为作品原文，用来生成证据卡；同一作品分了几篇的（上半/下半、各回连载），按顺序“追加”即可。已有原文的作品选“设为原文”会覆盖。</small></p>
+      <ul class="pe-list">${arts.map(a => {
+          const w = byId(st.works, a.matchWorkId);
+          const imported = st.works.some(x => (x.sourceFrom || []).includes(a.id));
+          return `<li><b>${h(a.code || a.id)}</b> <small>${h(a.date || '日期不详')} · ${a.length} 字 · ${a.status === 'sent' ? '已发出' : '未发出'}</small>${imported ? ' <small class="pe-tag">已导入</small>' : ''}
+          <div class="pe-evi">${h(a.head)}</div>
+          <div class="pe-row"><select class="pe-art-work" data-id="${h(a.id)}">${workOpts(w?.id || '')}</select>
+            <button class="pe-mini" data-act="art-set" data-id="${h(a.id)}">设为原文</button>
+            <button class="pe-mini" data-act="art-append" data-id="${h(a.id)}">追加到原文</button>
+            <button class="pe-mini" data-act="art-new" data-id="${h(a.id)}">新建作品</button></div></li>`;
+      }).join('')}</ul>
+    </section>` : ''}
     <section>
       <h4>从书信簿抽取</h4>
       <p><small>把书信簿、设定或剧情记录贴在下面，或者填世界书名称。模型只抽取原文明确写出的内容，每条附原文依据；结果先进待合并列表，由你勾选。</small></p>
       <div class="pe-row"><input id="pe-wb-name" type="text" placeholder="世界书名称" style="width:14em"><button data-act="wb-load">读取世界书到文本框</button></div>
       <textarea id="pe-import-text" rows="8" placeholder="粘贴文本……"></textarea>
-      <div class="pe-row"><button data-act="extract">开始抽取</button></div>
+      <div class="pe-row"><button class="pe-primary" data-act="extract">开始抽取</button></div>
     </section>
     <section>
       <h4>待合并（${pend.length}）</h4>
-      ${pend.length ? `<div class="pe-row"><button data-act="merge-selected">合并选中</button><button data-act="merge-selall">全选</button><button data-act="merge-clear">清空列表</button></div>
+      ${pend.length ? `<div class="pe-row"><button class="pe-primary" data-act="merge-selected">合并选中</button><button data-act="merge-selall">全选</button><button data-act="merge-clear">清空列表</button></div>
         <small>会按 笔名 → 刊物 → 人物 → 作品 → 已发生反响 的顺序合并，这样人物的供稿刊物、作品的署名能对上。</small>` : ''}
       <ul class="pe-list">${pend.map(({ p, i }) => `<li><label><input type="checkbox" class="pe-merge-cb" value="${i}">
         <span class="pe-tag">${kindName[p.kind] || p.kind}</span> <b>${h(p.data.name || p.data.title || `${p.data.date || ''} ${p.data.person || ''}`)}</b></label>
@@ -546,7 +677,7 @@ function settings(st, s) {
       <div id="pe-settings">${formHtml(SETTINGS_SPEC, s)}</div>
       <h5>各层级倍率（公开发表与私信的意愿）</h5>
       <div class="pe-form" id="pe-layermult">${['review', 'notice', 'echo', 'polemic', 'private_letter'].map(k => `<div class="pe-field"><label>${LAYERS[k].label}</label><input type="number" step="0.1" data-lm="${k}" value="${h(lm[k] ?? 1)}"></div>`).join('')}</div>
-      <div class="pe-row"><button data-act="settings-save">保存设置</button><button data-act="api-test">测试模型连接</button></div>
+      <div class="pe-row"><button class="pe-primary" data-act="settings-save">保存设置</button><button data-act="api-test">测试模型连接</button></div>
     </section>
     <section>
       <h4>本聊天的数据</h4>
@@ -564,6 +695,23 @@ function settings(st, s) {
 function onChange(e) {
     const t = e.target;
     if (t.id === 'pe-ledger-filter') { ledgerFilter = t.value; refresh(); }
+    if (t.id === 'pe-epi-scope') { const st = getState(); if (st) { st.epiScope = t.value; commit(); } }
+    if (t.id === 'pe-epi-file' && t.files?.[0]) {
+        const f = t.files[0];
+        setBusy('读取书信簿备份');
+        const r = new FileReader();
+        r.onload = () => {
+            setBusy('');
+            try {
+                const info = loadBackup(JSON.parse(r.result), f.name);
+                const st = getState();
+                if (st) st.epiScope = '';
+                commit(`已读取备份：${info.letters} 封信、${info.notes} 篇便条/文章`);
+            } catch (err) { toast('error', '读取失败：' + err.message); }
+        };
+        r.onerror = () => { setBusy(''); toast('error', '读取文件失败'); };
+        r.readAsText(f);
+    }
     if (t.id === 'pe-import-file' && t.files?.[0]) {
         const r = new FileReader();
         r.onload = () => {
@@ -580,9 +728,10 @@ function onChange(e) {
 
 async function onClick(e) {
     const btn = e.target.closest('button, [data-tab], [data-tab-go]');
+    if (btn?.tagName === 'SUMMARY') return;
     if (!btn) return;
-    if (btn.dataset.tab) { tab = btn.dataset.tab; editing = null; refresh(); return; }
-    if (btn.dataset.tabGo) { tab = btn.dataset.tabGo; editing = null; refresh(); return; }
+    const go = btn.dataset.tab || btn.dataset.tabGo;
+    if (go) { tab = go; editing = null; refresh(); const b = document.getElementById('pe-body'); if (b) b.scrollTop = 0; return; }
     const act = btn.dataset.act;
     if (!act) return;
     const st = getState();
@@ -593,6 +742,7 @@ async function onClick(e) {
     try {
         switch (act) {
         case 'close': togglePanel(false); break;
+        case 'win-reset': { const p = document.getElementById('pe-panel'); getSettings().winRect = null; saveSettings(); applyRect(p, null); break; }
 
         // 日期
         case 'date-set': {
@@ -914,10 +1064,44 @@ async function onClick(e) {
             commit(act === 'epi-hint-ignore' ? '已忽略' : act === 'epi-hint-letter' ? '已加入候选（请到候选里确认褒贬后批准）' : '已记为读过');
             break;
         }
+
+        case 'epi-unload': clearBackup(); st.epiScope = ''; commit('已卸下备份'); break;
+        case 'epi-hint-extract': {
+            const hint = (st.epiHints || []).find(x => x.id === btn.dataset.id);
+            const ta = $('#pe-import-text');
+            const txt = hint && letterText(hint.letterId);
+            if (!txt) return toast('warning', '找不到这封信的全文（备份可能已卸下）');
+            if (ta) { ta.value = (ta.value ? ta.value + '\n\n' : '') + txt; ta.scrollIntoView?.({ block: 'center' }); }
+            toast('success', '已放进抽取文本框，确认后点“开始抽取”');
+            break;
+        }
+        case 'art-set':
+        case 'art-append':
+        case 'art-new': {
+            const body = articleBody(btn.dataset.id);
+            if (!body) return toast('warning', '找不到这篇文章（备份可能已卸下）');
+            const MAX = 150000;
+            let w;
+            if (act === 'art-new') {
+                const a = listArticles(st).find(x => x.id === btn.dataset.id);
+                w = { ...blankWork(), title: (a?.head || a?.code || '未命名').replace(/^[#*\s]+|[*]+$/g, '').slice(0, 40), pubDate: /^\d{4}-\d{2}-\d{2}$/.test(a?.date || '') ? a.date : '', pennameId: st.pennames[0]?.id || '' };
+                st.works.push(w);
+            } else {
+                w = byId(st.works, [...document.querySelectorAll('.pe-art-work')].find(x => x.dataset.id === btn.dataset.id)?.value);
+                if (!w) return toast('warning', '请先选择对应的作品');
+            }
+            const cur = act === 'art-append' ? String(w.sourceText || '') : '';
+            w.sourceText = (cur ? cur + '\n\n' : '') + body;
+            if (w.sourceText.length > MAX) { w.sourceText = w.sourceText.slice(0, MAX); toast('warning', `原文超过 ${MAX} 字，已截断`); }
+            w.sourceFrom = [...new Set([...(act === 'art-append' ? w.sourceFrom || [] : []), btn.dataset.id])];
+            if (w.evidence) w.evidence.stale = true;
+            commit(act === 'art-new' ? `已新建作品《${w.title}》，请到“作品”页补充资料` : `已导入《${w.title}》原文（共 ${w.sourceText.length} 字）${w.evidence ? '；证据卡需要重新生成' : ''}`);
+            break;
+        }
         case 'epi-people': {
             const props = peopleProposals(st);
             st.pendingMerge.push(...props);
-            commit(props.length ? `已加入 ${props.length} 位人物到待合并（默认无公开身份，请补上身份和供稿刊物）` : '书信簿里没有新人物');
+            commit(props.length ? `已加入 ${props.length} 位人物到待合并（默认无公开身份，请补上身份和供稿刊物；不需要的不勾选即可）` : '书信簿里没有新人物');
             break;
         }
         case 'epi-date-adopt': {
