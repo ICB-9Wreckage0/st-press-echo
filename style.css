@@ -1,0 +1,95 @@
+/* 报刊回声 —— 尽量沿用酒馆主题变量 */
+#pe-fab {
+    position: fixed; right: 14px; bottom: 110px; z-index: 3000;
+    width: 42px; height: 42px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; cursor: pointer; user-select: none;
+    background: var(--SmartThemeBlurTintColor, #222);
+    border: 1px solid var(--SmartThemeBorderColor, #555);
+    box-shadow: 0 2px 8px rgba(0,0,0,.35);
+}
+#pe-fab[data-badge]:not([data-badge=""])::after {
+    content: attr(data-badge);
+    position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px;
+    border-radius: 9px; background: #c0392b; color: #fff; font-size: 11px; line-height: 18px; text-align: center;
+}
+#pe-panel {
+    position: fixed; z-index: 3001; top: 5vh; right: 2vw; width: min(760px, 96vw); height: 88vh;
+    display: flex; flex-direction: column;
+    background: var(--SmartThemeBlurTintColor, #1e1e1e);
+    color: var(--SmartThemeBodyColor, #ddd);
+    border: 1px solid var(--SmartThemeBorderColor, #555); border-radius: 10px;
+    box-shadow: 0 6px 30px rgba(0,0,0,.5);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength, 8px));
+    font-size: 14px;
+}
+#pe-panel.pe-hidden { display: none; }
+#pe-panel .pe-head, .pe-modal .pe-head {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #555);
+}
+#pe-panel .pe-head .pe-x, .pe-modal .pe-x { margin-left: auto; }
+.pe-busy { font-size: 12px; opacity: .85; }
+#pe-panel .pe-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 10px; border-bottom: 1px solid var(--SmartThemeBorderColor, #555); }
+#pe-panel button, .pe-modal button {
+    background: var(--SmartThemeBlurTintColor, #333); color: inherit;
+    border: 1px solid var(--SmartThemeBorderColor, #666); border-radius: 6px;
+    padding: 3px 9px; cursor: pointer; font-size: 13px;
+}
+#pe-panel button:hover { filter: brightness(1.25); }
+#pe-panel button:disabled { opacity: .45; cursor: not-allowed; }
+#pe-panel .pe-tabs button.pe-on { background: var(--SmartThemeQuoteColor, #4a6); color: #000; }
+#pe-panel button.pe-mini { padding: 1px 6px; font-size: 12px; }
+#pe-panel .pe-body { overflow: auto; padding: 8px 14px 30px; flex: 1; }
+#pe-panel section { margin: 8px 0 14px; }
+#pe-panel h4 { margin: 6px 0; font-size: 15px; }
+#pe-panel h5 { margin: 8px 0 4px; }
+#pe-panel .pe-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
+#pe-panel input[type=text], #pe-panel input[type=number], #pe-panel input[type=password], #pe-panel select, #pe-panel textarea {
+    background: rgba(0,0,0,.25); color: inherit; border: 1px solid var(--SmartThemeBorderColor, #666);
+    border-radius: 5px; padding: 3px 6px; font-size: 13px; box-sizing: border-box;
+}
+#pe-panel textarea { width: 100%; font-family: inherit; }
+#pe-panel .pe-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px 12px; margin: 6px 0; }
+#pe-panel .pe-field { display: flex; flex-direction: column; gap: 2px; }
+#pe-panel .pe-field.pe-wide { grid-column: 1 / -1; }
+#pe-panel .pe-field small, #pe-panel small { opacity: .75; font-size: 12px; }
+#pe-panel .pe-check label { display: flex; gap: 6px; align-items: center; }
+#pe-panel .pe-multi { display: flex; flex-wrap: wrap; gap: 4px 10px; max-height: 110px; overflow: auto; padding: 3px; border: 1px dashed var(--SmartThemeBorderColor, #555); border-radius: 5px; }
+#pe-panel .pe-multi label { display: flex; gap: 3px; align-items: center; font-size: 13px; }
+#pe-panel .pe-table { width: 100%; border-collapse: collapse; }
+#pe-panel .pe-table td, #pe-panel .pe-table th { border-bottom: 1px solid rgba(128,128,128,.25); padding: 4px; text-align: left; vertical-align: top; }
+#pe-panel .pe-nowrap { white-space: nowrap; width: 1%; }
+#pe-panel .pe-list { list-style: none; padding: 0; margin: 4px 0; }
+#pe-panel .pe-list > li { padding: 6px 4px; border-bottom: 1px solid rgba(128,128,128,.25); }
+#pe-panel .pe-log { padding-left: 16px; max-height: 180px; overflow: auto; }
+#pe-panel .pe-layer { font-weight: bold; }
+#pe-panel .pe-pol { padding: 0 5px; border-radius: 4px; font-size: 12px; }
+#pe-panel .pe-pol1 { background: rgba(60,160,90,.35); }
+#pe-panel .pe-pol0 { background: rgba(160,160,60,.35); }
+#pe-panel .pe-pol-1 { background: rgba(190,70,60,.4); }
+#pe-panel .pe-tag { display: inline-block; padding: 0 5px; border-radius: 4px; background: rgba(120,120,200,.3); font-size: 11px; }
+#pe-panel .pe-flag, #pe-panel .pe-warn { color: #e6a23c; font-size: 12px; }
+#pe-panel .pe-note { color: #8cc; font-size: 13px; }
+#pe-panel .pe-evi { font-size: 12px; opacity: .85; border-left: 3px solid rgba(128,128,128,.5); padding-left: 6px; margin: 2px 0; }
+#pe-panel .pe-text { white-space: normal; line-height: 1.6; padding: 6px 8px; background: rgba(0,0,0,.18); border-radius: 6px; margin: 4px 0; }
+#pe-panel details summary { cursor: pointer; }
+#pe-panel .pe-file { display: inline-block; padding: 3px 9px; font-size: 13px; cursor: pointer; }
+.pe-modal { position: fixed; inset: 0; z-index: 3100; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
+.pe-modal-box {
+    width: min(820px, 94vw); max-height: 86vh; display: flex; flex-direction: column;
+    background: var(--SmartThemeBlurTintColor, #1e1e1e); color: var(--SmartThemeBodyColor, #ddd);
+    border: 1px solid var(--SmartThemeBorderColor, #555); border-radius: 10px;
+}
+.pe-modal pre { margin: 0; padding: 10px 14px; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+@media (max-width: 600px) {
+    #pe-panel { top: 0; right: 0; width: 100vw; height: 100dvh; border-radius: 0; }
+    #pe-fab { bottom: 160px; }
+}
+
+/* v0.2 */
+.pe-major { color: #b5522b; border-color: #b5522b; font-weight: 600; }
+.pe-why { margin: .2em 0 .3em; font-size: .9em; opacity: .9; }
+.pe-why summary { cursor: pointer; color: var(--SmartThemeQuoteColor, #8a7); }
+.pe-why ol { margin: .2em 0 0 1.2em; padding: 0; }
+.pe-text { white-space: normal; font-size: .9em; line-height: 1.5; max-height: 24em; overflow: auto; padding: .4em; background: rgba(0,0,0,.08); border-radius: 4px; }
