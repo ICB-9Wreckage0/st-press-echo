@@ -1,6 +1,6 @@
 // ui.js — 面板界面（纯 DOM，不依赖框架）
 
-import { escapeHtml as h, parseTags, tagsToText, truncate } from './util.js';
+import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON } from './util.js';
 import { weekdayZh, normalizeISO, yearOf, cmp } from './date.js';
 import {
     FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, repLabel, setStatus, rerollWork, advanceTo, byId, columnSlots,
@@ -20,7 +20,11 @@ import {
 import { extractFromText, loadWorldbookText } from './extract.js';
 import { callLLM } from './llm.js';
 import { Fab } from './fab.js';
-import { planImport, readTextFile } from './txtimport.js';
+import { planImport, readTextFile, parseFileName } from './txtimport.js';
+import {
+    FORMAT_SPEC, FORMAT_RULES, buildExternalPrompt, normalizeBundle, mergeBundles, previewBundle, applyBundle, organize,
+    chatToText, parseJsonl, looksLikeBundle, chunk as chunkMaterial,
+} from './bundle.js';
 
 let app = null; // { refreshInjection, detectFromChat }
 let tab = 'overview';
@@ -32,6 +36,8 @@ let lastReport = null;
 let fab = null;
 let txtPlan = []; // txt 批量导入的预览（正文只放在内存里，导入时才写进作品）
 let txtOverwrite = false;
+let materials = []; // 一键整理的材料（只在内存里）：{ id, label, kind, text }
+let orgAbort = null;
 
 const toast = (type, msg) => (globalThis.toastr?.[type] ? globalThis.toastr[type](msg, '报刊回声') : console.log('[报刊回声]', msg));
 
@@ -162,7 +168,7 @@ const WORK_SPEC = [
 
 const TABS = [
     ['overview', '概览'], ['queue', '待审核'], ['ledger', '账本'], ['reading', '阅读记录'],
-    ['works', '作品'], ['people', '人物与刊物'], ['era', '年代'], ['import', '书信簿与导入'], ['settings', '⚙ 设置'],
+    ['works', '作品'], ['people', '人物与刊物'], ['era', '年代'], ['import', '导入与整理'], ['settings', '⚙ 设置'],
 ];
 
 export function mountUI(appApi) {
@@ -196,9 +202,15 @@ export function mountUI(appApi) {
     panel.addEventListener('click', onClick);
     panel.addEventListener('change', onChange);
     panel.addEventListener('input', e => { if (e.target.dataset?.txt != null && e.target.tagName === 'INPUT') syncTxtField(e.target); });
-    panel.addEventListener('dragover', e => { const z = e.target.closest?.('#pe-txt-drop'); if (z) { e.preventDefault(); z.classList.add('pe-drop-on'); } });
-    panel.addEventListener('dragleave', e => { e.target.closest?.('#pe-txt-drop')?.classList.remove('pe-drop-on'); });
-    panel.addEventListener('drop', e => { const z = e.target.closest?.('#pe-txt-drop'); if (!z) return; e.preventDefault(); z.classList.remove('pe-drop-on'); loadTxtFiles([...(e.dataTransfer?.files || [])]); });
+    const zone = e => e.target.closest?.('#pe-txt-drop, #pe-org-drop');
+    panel.addEventListener('dragover', e => { const z = zone(e); if (z) { e.preventDefault(); z.classList.add('pe-drop-on'); } });
+    panel.addEventListener('dragleave', e => { zone(e)?.classList.remove('pe-drop-on'); });
+    panel.addEventListener('drop', e => {
+        const z = zone(e); if (!z) return;
+        e.preventDefault(); z.classList.remove('pe-drop-on');
+        const files = [...(e.dataTransfer?.files || [])];
+        if (z.id === 'pe-org-drop') addOrgFiles(files); else loadTxtFiles(files);
+    });
     bindWindow(panel);
     applyRect(panel, s0.winRect);
     window.addEventListener('resize', () => applyRect(panel, getSettings().winRect));
@@ -631,6 +643,11 @@ function commitTxt(st) {
     commit(`已导入：新建 ${made} 部、更新 ${updated} 部${outlets ? `，新建刊物 ${outlets} 个（请到“人物与刊物”补全出刊周期）` : ''}${bad.length ? `；跳过 ${bad.length} 个：${bad.join('；')}` : ''}`);
 }
 
+function pickUpdate(st, r) {
+    const p = planImport(st, r.fileName, r.text);
+    return p.action === 'update' ? { action: 'update', workId: p.workId } : {};
+}
+
 function findOutlet(st, name) {
     const n = String(name).replace(/\s/g, '');
     return st.outlets.find(o => o.name.replace(/\s/g, '') === n) || st.outlets.find(o => { const m = o.name.replace(/\s/g, ''); return m.includes(n) || n.includes(m); }) || null;
@@ -775,6 +792,120 @@ function era(st, s) {
     </section>`;
 }
 
+const KIND_LABEL = { pennames: '笔名', outlets: '刊物', persons: '人物', works: '作品', reactions: '已发生的反响', readings: '阅读记录', rumors: '传闻', eraNotes: '年代笔记' };
+const estCalls = () => materials.reduce((n, m) => n + chunkMaterial(m.text).length, 0);
+
+function organizerBlock(st) {
+    const calls = estCalls();
+    const chars = materials.reduce((n, m) => n + m.text.length, 0);
+    return `${st.pendingBundle ? bundlePreview(st) : ''}
+    <section class="pe-drop" id="pe-org-drop">
+      <h4>一键整理 <span class="pe-muted">把材料放进来，交给已连接的模型整理成人物、刊物、作品和已发生的反响</span></h4>
+      <div class="pe-toolbar">
+        <label class="menu_button pe-file pe-primary">添加文件<input type="file" id="pe-org-files" multiple accept=".txt,.md,.json,.jsonl,text/plain,application/json" hidden></label>
+        <button data-act="org-chat">加入当前聊天记录</button>
+        <input id="pe-org-last" type="number" min="0" placeholder="最近几楼（空=全部）" style="width:11em">
+        <input id="pe-wb-name" type="text" placeholder="世界书名称" style="width:9em"><button data-act="wb-load">加入世界书</button>
+      </div>
+      <div class="pe-muted">可以直接拖进来，能识别这几类：</div>
+      <ul class="pe-era-ul pe-muted">
+        <li>聊天记录：.txt 文本，或酒馆导出的 .jsonl</li>
+        <li>书信簿备份 .json：会同时读进书信簿联动</li>
+        <li>整理包 .json：直接进入预览，不调用模型</li>
+        <li>作品原文：文件名带日期的 .txt（如 长子-回声报1890-4-15.txt），会进入“作品”页的 txt 导入，应用时一并导入</li>
+      </ul>
+      <textarea id="pe-import-text" rows="4" placeholder="也可以把设定、笔记、某段剧情粘贴在这里，再点“加入材料”。"></textarea>
+      <div class="pe-toolbar"><button data-act="org-paste">加入材料</button></div>
+      ${materials.length ? `<div class="pe-org-list">${materials.map(m => `<div class="pe-card pe-card-slim"><div class="pe-card-main"><span class="pe-chip pe-chip-layer">${h(m.kind)}</span> ${h(m.label)} <span class="pe-muted">${m.text.length.toLocaleString()} 字 · ${chunkMaterial(m.text).length} 段</span></div>
+          <div class="pe-card-actions pe-card-actions-row"><button class="pe-mini" data-act="org-del" data-id="${m.id}">移除</button></div></div>`).join('')}</div>
+        <div class="pe-callout ${calls > 40 ? 'pe-callout-warn' : 'pe-callout-accent'}">共 ${chars.toLocaleString()} 字，约 <b>${calls}</b> 次模型调用。${calls > 40 ? '材料很长：用插件逐段整理会比较慢、耗费也多，可以考虑下面的“用外部 AI 整理”，长上下文的聊天 AI 一次就能读完。' : ''}
+          ${orgAbort ? '<button data-act="org-stop">停止</button>' : `<button class="pe-primary" data-act="org-run">开始整理</button><button data-act="org-clear">清空材料</button>`}</div>` : ''}
+      ${txtPlan.length ? `<div class="pe-muted">另有 ${txtPlan.length} 个作品原文 txt 已放进 <a class="pe-link" data-tab-go="works">作品页</a> 的导入列表。</div>` : ''}
+    </section>
+
+    <details class="pe-fold" ${st.pendingBundle ? '' : 'open'}><summary>用外部 AI 整理（适合很长的聊天记录）</summary>
+      <ol class="pe-era-ul">
+        <li>点“复制提示词”，发给 Claude、ChatGPT、Gemini 等长上下文的聊天 AI；</li>
+        <li>把聊天记录、书信、设定发给它（可以分几次）；</li>
+        <li>把它回复的 JSON 粘贴到下面点“读取”，或者存成 .json 文件拖进上面的整理区。分几次输出的可以多次读取，会自动合并。</li>
+      </ol>
+      <div class="pe-toolbar"><button class="pe-primary" data-act="bundle-prompt">复制提示词</button><button data-act="bundle-spec">下载格式说明</button></div>
+      <textarea id="pe-bundle-text" rows="4" placeholder="把外部 AI 输出的 JSON 粘贴到这里"></textarea>
+      <div class="pe-toolbar"><button data-act="bundle-read">读取</button></div>
+    </details>`;
+}
+
+function bundlePreview(st) {
+    const b = st.pendingBundle;
+    const pv = previewBundle(st, b);
+    const kinds = Object.keys(KIND_LABEL).filter(k => (pv.counts[k]?.new || 0) + (pv.counts[k]?.update || 0) > 0);
+    return `
+    <section class="pe-bundle">
+      <h4>整理结果预览 <span class="pe-spacer"></span><button class="pe-primary" data-act="bundle-apply">应用</button><button data-act="bundle-download">下载整理包</button><button data-act="bundle-drop">丢弃</button></h4>
+      <div class="pe-muted">确认后才会写进数据。按名字合并：已有的只补充和更新，不会删除你填过的内容；导入的反响记为“已发生”，直接入账。</div>
+      ${b.storyDate ? `<div class="pe-callout">故事日期 <b class="pe-num">${h(b.storyDate)}</b>${b.place ? ` · ${h(b.place)}` : ''}
+        <select id="pe-bundle-datemode"><option value="set">直接设为当前日期（之前的反响以整理包为准，不再推演）</option><option value="none">不改日期</option></select></div>` : ''}
+      <div class="pe-stats pe-bundle-stats">${kinds.map(k => `<label class="pe-stat"><span><input type="checkbox" class="pe-bundle-kind" value="${k}" checked> ${KIND_LABEL[k]}</span>
+        <b>${pv.counts[k].new + pv.counts[k].update}</b><span>${pv.counts[k].update ? `新建 ${pv.counts[k].new} · 更新 ${pv.counts[k].update}` : k === 'reactions' || k === 'readings' ? '记为已发生' : '新建'}</span></label>`).join('') || '<div class="pe-empty-sm">整理包是空的。</div>'}</div>
+      ${pv.warnings.length ? `<div class="pe-callout pe-callout-warn"><div><b>注意（${pv.warnings.length}）</b><ul class="pe-era-ul">${pv.warnings.slice(0, 30).map(w => `<li>${h(w)}</li>`).join('')}</ul></div></div>` : ''}
+      ${kinds.map(k => `<details class="pe-era-sec"><summary>${KIND_LABEL[k]} <span class="pe-count pe-count-dim">${pv.items[k]?.length ?? pv.counts[k].new}</span></summary>
+        <div class="pe-era-chips pe-era-chips-wrap">${(pv.items[k] || (b[k] || []).map(x => ({ name: x.text || x.title, exists: false }))).map(x => `<span class="pe-chip ${x.exists ? '' : 'pe-chip-layer'}" title="${x.exists ? '已有，将更新' : '新建'}">${h(truncate(x.name || '', 50))}</span>`).join('')}</div></details>`).join('')}
+      <div class="pe-toolbar"><button class="pe-primary" data-act="bundle-apply">应用整理结果${txtPlan.length ? `（并导入 ${txtPlan.filter(r => r.action !== 'skip').length} 个作品原文）` : ''}</button></div>
+    </section>`;
+}
+
+async function addOrgFiles(files) {
+    const st = getState();
+    if (!st) return;
+    setBusy('读取文件');
+    const notes = [];
+    try {
+        for (const f of files) {
+            const text = await readTextFile(f);
+            if (/\.jsonl$/i.test(f.name)) {
+                const rows = parseJsonl(text);
+                materials.push({ id: uid(), label: f.name, kind: '聊天记录', text: chatToText(rows) });
+                continue;
+            }
+            if (/\.json$/i.test(f.name)) {
+                let obj;
+                try { obj = JSON.parse(text); } catch { try { obj = extractJSON(text); } catch { notes.push(`${f.name}：不是合法的 JSON`); continue; } }
+                if (obj?.kind === 'epistolary-backup' || obj?.archive?.letters) {
+                    const info = loadBackup(obj, f.name);
+                    st.epiScope = '';
+                    const letters = Object.values(obj.archive.letters || {}).filter(l => l.body && (effectiveScope(st) === '*' || l.scope === effectiveScope(st)));
+                    const txt = letters.map(l => letterText(l.id)).join('\n\n');
+                    materials.push({ id: uid(), label: `${f.name}（书信簿 ${info.letters} 封信、${info.notes} 篇便条/文章）`, kind: '书信', text: txt });
+                    notes.push('书信簿备份也已读进“书信簿联动”');
+                    continue;
+                }
+                if (looksLikeBundle(obj)) {
+                    st.pendingBundle = mergeBundles(st.pendingBundle, normalizeBundle(obj));
+                    notes.push(`${f.name}：整理包已读入预览`);
+                    continue;
+                }
+                notes.push(`${f.name}：认不出这个 JSON（既不是整理包，也不是书信簿备份）`);
+                continue;
+            }
+            const pf = parseFileName(f.name);
+            if (pf.date) {
+                txtPlan = txtPlan.filter(r => r.fileName !== f.name);
+                txtPlan.push({ ...planImport(st, f.name, text), text });
+                notes.push(`${f.name}：按作品原文处理`);
+                continue;
+            }
+            materials.push({ id: uid(), label: f.name, kind: /聊天|chat|记录/i.test(f.name) ? '聊天记录' : '文本', text });
+        }
+    } finally { setBusy(''); }
+    commit(notes.length ? notes.join('；') : '');
+}
+
+function copyText(text, label) {
+    const ok = () => toast('success', `已复制${label}`);
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(ok, () => showText(label, text));
+    else showText(label, text);
+}
+
 function importTab(st) {
     const order = { penname: 0, outlet: 1, person: 2, work: 3, reaction: 4 };
     const kindName = { penname: '笔名', outlet: '刊物', person: '人物', work: '作品', reaction: '已发生反响' };
@@ -787,7 +918,7 @@ function importTab(st) {
     const arts = epi ? listArticles(st) : [];
     const workOpts = sel => `<option value="">（选择作品）</option>${st.works.map(w => `<option value="${h(w.id)}" ${w.id === sel ? 'selected' : ''}>${h(w.title)}</option>`).join('')}`;
     const dirName = { from_user: '主角寄出', to_user: '寄给主角', third_party: '第三方之间' };
-    return `
+    return organizerBlock(st) + `
     <section>
       <h4>书信簿（st-epistolary）联动</h4>
       <p><small>只读取，不会改动书信簿。信里提到作品的地方只作为<b>辅助线索</b>，默认不算已发生的反响，由你逐条决定。</small></p>
@@ -827,14 +958,7 @@ function importTab(st) {
             <button class="pe-mini" data-act="art-new" data-id="${h(a.id)}">新建作品</button></div></li>`;
       }).join('')}</ul>
     </section>` : ''}
-    <section>
-      <h4>从书信簿抽取</h4>
-      <p><small>把书信簿、设定或剧情记录贴在下面，或者填世界书名称。模型只抽取原文明确写出的内容，每条附原文依据；结果先进待合并列表，由你勾选。</small></p>
-      <div class="pe-row"><input id="pe-wb-name" type="text" placeholder="世界书名称" style="width:14em"><button data-act="wb-load">读取世界书到文本框</button></div>
-      <textarea id="pe-import-text" rows="8" placeholder="粘贴文本……"></textarea>
-      <div class="pe-row"><button class="pe-primary" data-act="extract">开始抽取</button></div>
-    </section>
-    <section>
+    ${pend.length ? `<section>
       <h4>待合并（${pend.length}）</h4>
       ${pend.length ? `<div class="pe-row"><button class="pe-primary" data-act="merge-selected">合并选中</button><button data-act="merge-selall">全选</button><button data-act="merge-clear">清空列表</button></div>
         <small>会按 笔名 → 刊物 → 人物 → 作品 → 已发生反响 的顺序合并，这样人物的供稿刊物、作品的署名能对上。</small>` : ''}
@@ -843,7 +967,7 @@ function importTab(st) {
         <small>${h(truncate(JSON.stringify(p.data), 220))}</small>
         ${p.evidence ? `<div class="pe-evi">依据：${h(p.evidence)}</div>` : '<div class="pe-evi pe-warn">无原文依据</div>'}
         <small>来源：${h(p.source || '')}</small></li>`).join('')}</ul>
-    </section>`;
+    </section>` : ''}`;
 }
 
 const SETTINGS_SPEC = [
@@ -900,6 +1024,7 @@ function onChange(e) {
     const t = e.target;
     if (t.id === 'pe-ledger-filter') { ledgerFilter = t.value; refresh(); }
     if (t.id === 'pe-txt-files' && t.files?.length) { loadTxtFiles([...t.files]); t.value = ''; return; }
+    if (t.id === 'pe-org-files' && t.files?.length) { addOrgFiles([...t.files]); t.value = ''; return; }
     if (t.id === 'pe-txt-overwrite') { txtOverwrite = t.checked; return; }
     if (t.dataset?.txt != null) { syncTxtField(t); return; }
     if (t.id === 'pe-epi-scope') { const st = getState(); if (st) { st.epiScope = t.value; commit(); } }
@@ -949,6 +1074,70 @@ async function onClick(e) {
     try {
         switch (act) {
         case 'close': togglePanel(false); break;
+
+        // 一键整理 / 整理包
+        case 'org-chat': {
+            const c = globalThis.SillyTavern?.getContext?.();
+            const n = parseInt(document.getElementById('pe-org-last')?.value, 10);
+            const msgs = (c?.chat || []).slice(n > 0 ? -n : 0);
+            if (!msgs.length) return toast('warning', '当前聊天是空的');
+            materials.push({ id: uid(), label: `当前聊天${n > 0 ? `最近 ${n} 楼` : `全部 ${msgs.length} 楼`}`, kind: '聊天记录', text: chatToText(msgs) });
+            refresh(); break;
+        }
+        case 'org-paste': {
+            const t = $('#pe-import-text')?.value.trim();
+            if (!t) return toast('warning', '文本框是空的');
+            materials.push({ id: uid(), label: `粘贴的文本（${truncate(t.replace(/\s+/g, ' '), 16)}）`, kind: '文本', text: t });
+            refresh(); break;
+        }
+        case 'org-del': materials = materials.filter(m => m.id !== btn.dataset.id); refresh(); break;
+        case 'org-clear': materials = []; refresh(); break;
+        case 'org-stop': orgAbort?.abort(); toast('info', '当前这一段完成后停止'); break;
+        case 'org-run': {
+            if (!materials.length) break;
+            orgAbort = new AbortController();
+            refresh();
+            try {
+                const b = await organize(st, materials, s, m => setBusy(m), orgAbort.signal);
+                st.pendingBundle = mergeBundles(st.pendingBundle, b);
+                if (!orgAbort.signal.aborted) materials = [];
+                logLine(st, `一键整理：${['persons', 'works', 'reactions'].map(k => `${KIND_LABEL[k]} ${(b[k] || []).length}`).join('，')}`);
+            } finally { orgAbort = null; setBusy(''); }
+            commit('整理完成，请查看预览');
+            break;
+        }
+        case 'bundle-prompt': copyText(buildExternalPrompt(st), '提示词'); break;
+        case 'bundle-spec': download('报刊回声整理包格式.md', `# 报刊回声 · 整理包格式\n\n\`\`\`json\n${FORMAT_SPEC}\n\`\`\`\n\n${FORMAT_RULES}\n\n---\n\n## 给外部 AI 的提示词\n\n${buildExternalPrompt(st)}\n`); break;
+        case 'bundle-read': {
+            const t = $('#pe-bundle-text')?.value.trim();
+            if (!t) return toast('warning', '请先粘贴 JSON');
+            let obj;
+            try { obj = extractJSON(t); } catch (err) { return toast('error', '读不出 JSON：' + err.message); }
+            if (!looksLikeBundle(obj)) return toast('warning', '这不像整理包（至少要有 works、persons、outlets、reactions 中的两项）');
+            st.pendingBundle = mergeBundles(st.pendingBundle, normalizeBundle(obj));
+            commit('已读入预览');
+            break;
+        }
+        case 'bundle-download': download(`报刊回声整理包_${st.pendingBundle?.storyDate || ''}.json`, JSON.stringify(st.pendingBundle, null, 2)); break;
+        case 'bundle-drop': if (confirm('丢弃这份整理结果？')) { st.pendingBundle = null; commit(); } break;
+        case 'bundle-apply': {
+            const b = st.pendingBundle;
+            if (!b) break;
+            const kinds = [...document.querySelectorAll('.pe-bundle-kind')].filter(c => c.checked).map(c => c.value);
+            const dateMode = $('#pe-bundle-datemode')?.value || 'set';
+            const rep = applyBundle(st, b, { kinds, dateMode, settings: s, era: getEra() });
+            st.pendingBundle = null;
+            syncEraYear(st);
+            if (txtPlan.length) {
+                // 整理包可能刚建好作品：重新匹配一次，免得重复新建
+                txtPlan = txtPlan.map(r => (r.action === 'new' ? { ...r, ...pickUpdate(st, r) } : r));
+                commitTxt(st);
+            }
+            logLine(st, `应用整理包：${kinds.map(k => KIND_LABEL[k]).join('、')}；自动新建 ${rep.created.length}，跳过 ${rep.skipped.length}`);
+            commit(`已应用整理结果${rep.created.length ? `；自动新建 ${rep.created.length} 项资料空白的条目，请到“人物与刊物”补全` : ''}${rep.skipped.length ? `；跳过 ${rep.skipped.length} 条` : ''}`);
+            if (rep.skipped.length || rep.created.length) showText('应用报告', [...rep.lines, '', '自动新建：', ...rep.created, '', '跳过：', ...rep.skipped].join('\n'));
+            break;
+        }
         case 'txt-commit': commitTxt(st); break;
         case 'txt-clear': txtPlan = []; refresh(); break;
         case 'win-reset': { const p = document.getElementById('pe-panel'); getSettings().winRect = null; saveSettings(); applyRect(p, null); break; }
@@ -1175,8 +1364,8 @@ async function onClick(e) {
             const name = $('#pe-wb-name').value.trim();
             if (!name) return;
             setBusy('读取世界书');
-            $('#pe-import-text').value = await loadWorldbookText(name);
-            setBusy('');
+            try { materials.push({ id: uid(), label: `世界书“${name}”`, kind: '设定', text: await loadWorldbookText(name) }); } finally { setBusy(''); }
+            refresh();
             break;
         }
         case 'extract': {
@@ -1277,11 +1466,12 @@ async function onClick(e) {
         case 'epi-unload': clearBackup(); st.epiScope = ''; commit('已卸下备份'); break;
         case 'epi-hint-extract': {
             const hint = (st.epiHints || []).find(x => x.id === btn.dataset.id);
-            const ta = $('#pe-import-text');
             const txt = hint && letterText(hint.letterId);
             if (!txt) return toast('warning', '找不到这封信的全文（备份可能已卸下）');
-            if (ta) { ta.value = (ta.value ? ta.value + '\n\n' : '') + txt; ta.scrollIntoView?.({ block: 'center' }); }
-            toast('success', '已放进抽取文本框，确认后点“开始抽取”');
+            materials.push({ id: uid(), label: `书信 ${hint.code || hint.letterId}`, kind: '书信', text: txt });
+            refresh();
+            document.getElementById('pe-org-drop')?.scrollIntoView?.({ block: 'start' });
+            toast('success', '已加入整理材料，点“开始整理”交给模型');
             break;
         }
         case 'art-set':

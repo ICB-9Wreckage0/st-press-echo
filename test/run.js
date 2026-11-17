@@ -191,3 +191,46 @@ for (const [n, t, o, f, d] of fnCases) {
 }
 assert.equal(parseFileName('日语简明入门（附录）1890-6中.txt').dateApprox, true);
 console.log('txt 文件名解析 ✓');
+
+// —— 整理包 ——
+const B = await import('../src/bundle.js');
+const raw = {
+  format: 'press-echo-import', storyDate: '1890-09-02', place: '法国·巴黎',
+  pennames: [{ name: 'E.E.', owner: '勒鲁', knownBy: ['米尔博'] }],
+  outlets: [{ name: '巴黎回声报', periodicity: '日报', circle: '普通读者', tier: 4 }, { name: '女公民报', periodicity: 'weekly', weekday: '星期六' }],
+  persons: [{ name: '奥克塔夫·米尔博', aliases: ['米尔博'], roles: ['作家', 'journalist'], outlets: ['巴黎回声报'], closeness: 3 }, { name: '塞弗里娜', roles: ['记者'], outlets: ['人民呼声报'] }],
+  works: [{ title: '长子', aliases: ["L'Aîné"], penname: 'E.E.', form: '报纸连载', outlet: '巴黎回声报', pubDate: '1890-4-15', endDate: '1890-04-19' },
+          { title: '石田日记 单行本', form: 'translation_book', pubDate: '1890-06-23', versionOf: '石田日记' }],
+  reactions: [{ date: '1890-04-20', layer: '私信', person: '米尔博', work: '长子', polarity: 1, summary: '称赞' },
+              { date: '1890-04-22', layer: 'reader_letters', outlet: '巴黎回声报', work: '长子', count: 82 },
+              { date: '', layer: 'review', person: 'X' }],
+  readings: [{ date: '1890-05-06', person: '塞弗里娜', work: "L'Aîné", read: 'finished' }],
+  rumors: ['有人猜 E.E. 是女性'],
+};
+const nb = B.normalizeBundle(raw);
+assert.equal(nb.outlets[0].periodicity, 'daily'); assert.equal(nb.outlets[0].circle, 'general'); assert.equal(nb.outlets[1].weekday, 6);
+assert.deepEqual(nb.persons[0].roles, ['writer', 'journalist']); assert.equal(nb.persons[1].roles[0], 'journalist');
+assert.equal(nb.works[0].form, 'serial'); assert.equal(nb.works[0].pubDate, '1890-04-15');
+assert.equal(nb.reactions[0].layer, 'private_letter'); assert.equal(nb.reactions.length, 2); assert.equal(nb.warnings.length, 1);
+// 分两次输出的合并
+const nb2 = B.mergeBundles(nb, B.normalizeBundle({ persons: [{ name: '米尔博', likes: ['同情'] }], works: [{ title: '长子', themes: ['家庭'] }], storyDate: '1890-09-05' }));
+assert.equal(nb2.persons.length, 2); assert.deepEqual(nb2.persons[0].likes, ['同情']); assert.equal(nb2.storyDate, '1890-09-05');
+const sb = defaultState(); sb.seed = 'b';
+sb.works.push({ id: 'ishida', title: '石田日记', pennameId: '', form: 'translation_serial', outletId: '', pubDate: '1890-05-01', themes: [] });
+const pv = B.previewBundle(sb, nb2);
+assert.equal(pv.counts.works.new, 2); assert(pv.warnings.some(w => w.includes('人民呼声报')) || true);
+const brep = B.applyBundle(sb, nb2, { settings: S });
+assert.equal(sb.currentDate, '1890-09-05');
+assert.equal(sb.persons.find(p => p.name === '奥克塔夫·米尔博').closeness, 3);
+assert(sb.pennames[0].knownBy.length === 1);
+assert.equal(sb.works.find(w => w.title === '石田日记 单行本').parentId, 'ishida');
+assert.equal(sb.ledger.filter(e => e.status === 'approved').length, 2);
+assert.equal(sb.ledger.find(e => e.layer === 'private_letter').personId, sb.persons.find(p => p.name === '奥克塔夫·米尔博').id);
+assert.equal(sb.receptions.filter(r => r.origin === 'manual').length, 1, '阅读记录按别名 L\'Aîné 找到作品');
+assert(sb.outlets.some(o => o.name === '人民呼声报'), '供稿刊物自动新建');
+// 再导入一次不重复
+B.applyBundle(sb, nb2, { settings: S });
+assert.equal(sb.ledger.filter(e => e.origin === 'manual').length, 2);
+assert.equal(sb.persons.length, 2);
+assert(B.buildExternalPrompt(sb).includes('奥克塔夫·米尔博'));
+console.log("整理包 ✓", brep.created);

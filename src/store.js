@@ -53,6 +53,7 @@ export function defaultState() {
         receptions: [],
         snapshots: [],
         decisionMemo: {},
+        pendingBundle: null,
         epiHints: [],
         rolls: {},
         rumors: [],
