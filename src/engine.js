@@ -138,6 +138,7 @@ export const DEFAULT_ENGINE_SETTINGS = {
 // ———————————— 工具 ————————————
 
 export function byId(list, id) {
+    if (id == null || id === '') return null; // 没有 id 的不匹配任何东西，免得都算到第一条头上
     return (list || []).find(x => x.id === id) || null;
 }
 
@@ -310,7 +311,7 @@ function contactStage(state, s, era, work, person, seed, extra) {
     }
     if (!extra) {
         const close = person.closeness || 0;
-        if (close >= 2 || person.knowsIdentity || pen?.knownBy?.includes(person.id)) add('friend', close >= 3 ? 0.8 : 0.6, [2, 10]);
+        if (close >= 2 || knowsPen(state, person, work.pennameId)) add('friend', close >= 3 ? 0.8 : 0.6, [2, 10]);
         const rep = state.reputation?.[work.pennameId] || {};
         add('buzz', clamp(0.05 + 0.05 * Math.max(0, (rep.general || 0) + (rep.literary || 0)), 0.05, 0.3), [3, 20]);
         // 追读：此前读了同一笔名的作品、决定找这位作者的东西看
@@ -419,7 +420,7 @@ function expressionStage(state, s, era, work, person, read, op, seed, via) {
         p *= FORM_FACTOR[layer]?.[work.form] ?? 0.5;
         p *= op.strength === 'strong' ? 1 : 0.45;
         p *= [1, 0.9, 0.55, 0.3][close];
-        if ((byId(state.pennames, work.pennameId)?.knownBy?.includes(person.id) || person.knowsIdentity) && close >= 2) p *= 0.7;
+        if (knowsPen(state, person, work.pennameId) && close >= 2) p *= 0.7;
         if (layer === 'polemic') {
             const opposing = via && via.polarity !== 0 && via.polarity !== op.polarity;
             p *= opposing ? 1.4 : dislikes > 0 ? clamp(0.4 + 0.3 * dislikes, 0, 1.2) : 0.1;
@@ -566,9 +567,11 @@ export function relationsOf(state, person) {
     }
     return out;
 }
+/** 此人是否知道这个笔名背后是谁：以笔名的“知道身份的人”名单为准；名单空着时才看人物自己的“知道主角的笔名身份” */
 export function knowsPen(state, person, pennameId) {
     const pen = byId(state.pennames, pennameId);
-    return !!(pen?.knownBy || []).includes(person.id);
+    if (pen?.knownBy?.length) return pen.knownBy.includes(person.id);
+    return !!person.knowsIdentity;
 }
 const FREQ_P = { daily: 0.8, weekly: 0.6, monthly: 0.35, rare: 0.15 };
 const FREQ_LAG = { daily: [0, 2], weekly: [1, 8], monthly: [5, 30], rare: [10, 60] };
@@ -709,17 +712,20 @@ export function advanceTo(state, newDate, settings, era) {
     state.receptions = state.receptions || [];
 
     // ① 新发表的作品：每个人走一遍四关（整条链的日期一次算好，未到的标为排期）
+    report.diag = { pairs: 0, run: 0, preexisting: 0, inactive: 0 };
     for (const work of state.works || []) {
         if (!work.pubDate || cmp(work.pubDate, newDate) > 0) continue;
         for (const person of state.persons || []) {
-            if (person.active === false) continue;
+            if (person.active === false) { report.diag.inactive++; continue; }
             const key = `${work.id}|${person.id}`;
             if (state.rolls[key]) continue;
+            report.diag.pairs++;
             // 已有手动记录或已确认事件：不重复推演
             const exist = state.ledger.some(e => e.workId === work.id && e.personId === person.id && e.origin === 'manual' && e.status !== 'rejected')
                 || state.receptions.some(r => r.workId === work.id && r.personId === person.id && r.origin === 'manual');
-            if (exist) { state.rolls[key] = { preexisting: true, at: newDate }; continue; }
+            if (exist) { state.rolls[key] = { preexisting: true, at: newDate }; report.diag.preexisting++; continue; }
             state.rolls[key] = { at: newDate };
+            report.diag.run++;
             runPipeline(state, s, era, work, person, seed, report);
         }
     }
@@ -901,13 +907,23 @@ export { LAG_CLOSE, DEFAULT_CAPACITY, DEFAULT_DEADLINE };
  * mode = 'all'   ：公开报道和私信也补，全部作为“回溯”候选，逐条审核，不自动入账。
  * 会清掉之前推演出的、尚未入账的内容；手动/导入的记录和你已入账的都保留。
  */
-export function backfill(state, settings, era, { mode = 'hidden' } = {}) {
+/**
+ * 回溯分三步，可以分段进行：
+ *   backfillBegin  清掉之前推演出、尚未入账的内容，把时间拨回最早作品发表前一天；
+ *   backfillStep   推进到某一天（可以反复调用，一段一段推）；
+ *   backfillEnd    推到原来的日期后收尾。
+ * backfill() 是一口气做完的版本。
+ */
+export function backfillBegin(state, settings, era, { mode = 'hidden' } = {}) {
     useConcepts(state.concepts);
-    const target = state.currentDate;
+    const target = state.backfillRun?.target || state.currentDate;
     const pubs = (state.works || []).map(w => w.pubDate).filter(Boolean).sort();
-    if (!target || !pubs.length) throw new Error('需要先有故事日期和至少一部有发表日期的作品');
+    if (!target) throw new Error('需要先有故事日期');
+    if (!pubs.length) throw new Error('没有带发表日期的作品，无从回溯');
+    if (!(state.persons || []).length) throw new Error('人物列表是空的：回溯推演的是“人物”读到作品的经过，请先导入或添加人物');
     const first = pubs[0];
     if (cmp(first, target) > 0) throw new Error('作品都还没发表，不需要回溯');
+    if (state.backfillRun?.savedRumors) state.rumors = state.backfillRun.savedRumors; // 重新开始时先还原
     const removed = state.ledger.filter(e => e.origin === 'engine' && e.status !== 'approved').length;
     state.ledger = state.ledger.filter(e => e.origin !== 'engine' || e.status === 'approved');
     const keepRecIds = new Set(state.ledger.flatMap(e => (e.receptionId ? [e.receptionId] : [])));
@@ -918,42 +934,94 @@ export function backfill(state, settings, era, { mode = 'hidden' } = {}) {
     state.impressions = {};
     state.recommends = {};
     state.identityLeaks = (state.identityLeaks || []).filter(x => x.status !== 'pending');
-    const savedRumors = JSON.parse(JSON.stringify(state.rumors || []));
-    const before = new Set(state.ledger.map(e => e.id));
-    const s = { ...settings, autoApprove: 'none' };
-    if (mode === 'hidden') { s.publicBefore = target; s.privateBefore = target; }
+    state.backfillRun = {
+        mode, target, from: first, startedAt: new Date().toISOString(),
+        savedRumors: JSON.parse(JSON.stringify(state.rumors || [])),
+        beforeIds: state.ledger.map(e => e.id),
+        manualRecIds: manualRecs.map(r => r.id), manualDone: [],
+        stepped: [],
+    };
+    state.receptions.push(...manualRecs.map(r => ({ ...r, pendingRerun: true })));
     state.currentDate = addDays(first, -1);
-    // 手动/导入的阅读记录：保留“读过”这一事实，看法和表达按回溯规则重算
+    return { from: first, to: target, removed, persons: state.persons.length, works: pubs.length };
+}
+
+function runSettings(state, settings) {
+    const run = state.backfillRun;
+    const s = { ...settings, autoApprove: 'none' };
+    if (run?.mode === 'hidden') { s.publicBefore = run.target; s.privateBefore = run.target; }
+    return s;
+}
+
+/** 推进到 toDate（不超过回溯目标日）。返回这一段新增了什么 */
+export function backfillStep(state, settings, era, toDate) {
+    const run = state.backfillRun;
+    if (!run) throw new Error('还没有开始回溯');
+    useConcepts(state.concepts);
+    const target = cmp(toDate, run.target) > 0 ? run.target : toDate;
+    const from = state.currentDate;
+    if (cmp(target, from) <= 0) return { from, to: from, finished: 0, skimmed: 0, ignored: 0, events: 0, diag: null };
+    const s = runSettings(state, settings);
     const seed = state.seed || 'press-echo';
+    const recBefore = new Set(state.receptions.map(r => `${r.id}|${r.read}`));
+    const evBefore = new Set(state.ledger.map(e => e.id));
+    // 手动/导入的阅读：读到的那天落在这一段里时，按回溯规则重算看法和表达
     const rep0 = { scheduled: 0, receptions: 0 };
-    for (const rec of manualRecs) {
+    for (const rec of state.receptions.filter(r => r.pendingRerun && (!r.readDate || cmp(r.readDate, target) <= 0))) {
         const work = byId(state.works, rec.workId), person = byId(state.persons, rec.personId);
+        state.receptions = state.receptions.filter(r => r !== rec);
+        delete rec.pendingRerun;
         if (!work || !person) { state.receptions.push(rec); continue; }
-        rec.why = rec.why.filter(w => w.startsWith('手动记录'));
+        rec.why = (rec.why || []).filter(w => w.startsWith('手动记录'));
         rec.eventIds = (rec.eventIds || []).filter(id => state.ledger.some(e => e.id === id));
         state.rolls[`${work.id}|${person.id}`] = { manual: true };
         runPipeline(state, s, era, work, person, seed, rep0, { manualRead: rec });
     }
-    // 按周推进，让名气、回响随时间累积，而不是一下子用九月的名气去推四月的事
     let d = state.currentDate;
+    const diag = { pairs: 0, run: 0, preexisting: 0, inactive: 0 };
     while (cmp(d, target) < 0) {
         d = addDays(d, 7);
         if (cmp(d, target) > 0) d = target;
-        advanceTo(state, d, s, era);
+        const r = advanceTo(state, d, s, era);
+        for (const k of Object.keys(diag)) diag[k] += r.diag?.[k] || 0;
     }
-    const added = state.ledger.filter(e => !before.has(e.id));
+    const added = state.ledger.filter(e => !evBefore.has(e.id));
     for (const e of added) e.backfill = true;
-    state.rumors = savedRumors;
+    const newRecs = state.receptions.filter(r => !recBefore.has(`${r.id}|${r.read}`) && r.origin !== 'manual');
+    const cnt = k => newRecs.filter(r => r.read === k && (!r.readDate || cmp(r.readDate, target) <= 0)).length;
+    const reads = newRecs.filter(r => ['skimmed', 'finished'].includes(r.read) && r.readDate && cmp(r.readDate, target) <= 0)
+        .map(r => ({ personId: r.personId, workId: r.workId, read: r.read, readDate: r.readDate, polarity: r.polarity, strength: r.strength, channel: r.channel }));
+    const out = { reads, from, to: target, finished: cnt('finished'), skimmed: cnt('skimmed'), ignored: cnt('ignored'), none: newRecs.filter(r => r.read === 'none').length, events: added.length, candidates: added.filter(e => e.status === 'candidate').length, diag };
+    run.stepped.push({ to: target, ...out, at: new Date().toISOString() });
+    return out;
+}
+
+export function backfillEnd(state) {
+    const run = state.backfillRun;
+    if (!run) return null;
+    state.rumors = run.savedRumors;
     state.snapshots = [];
+    for (const r of state.receptions) delete r.pendingRerun;
+    const added = state.ledger.filter(e => !run.beforeIds.includes(e.id));
     const recs = state.receptions.filter(r => r.origin !== 'manual');
     const cnt = k => recs.filter(r => r.read === k).length;
-    return {
-        mode, from: first, to: target, removed,
+    const res = {
+        mode: run.mode, from: run.from, to: run.target,
         candidates: added.filter(e => e.status === 'candidate').length,
         scheduled: added.filter(e => e.status === 'scheduled').length,
         receptions: recs.length, finished: cnt('finished'), skimmed: cnt('skimmed'), ignored: cnt('ignored'),
         remarks: recs.filter(r => r.expression === 'remark').length,
     };
+    state.backfillRun = null;
+    state.currentDate = run.target;
+    return res;
+}
+
+export function backfill(state, settings, era, { mode = 'hidden' } = {}) {
+    state.backfillRun = null;
+    const b = backfillBegin(state, settings, era, { mode });
+    backfillStep(state, settings, era, b.to);
+    return { ...backfillEnd(state), removed: b.removed };
 }
 
 // ———————————— 预演（不改动数据） ————————————

@@ -26,6 +26,7 @@ function detectFromChat(manual = false, messageId = null) {
     const st = getState();
     const c = ctx();
     if (!st || !c?.chat?.length) return;
+    if (st.backfillRun) return; // 回溯进行中：不随消息推进
     if (!manual && (!s.enabled || !s.autoDetectDate)) return;
 
     const msgs = messageId != null && c.chat[messageId] ? [c.chat[messageId]] : c.chat.slice(manual ? -6 : -1).reverse();
@@ -90,7 +91,7 @@ function syncFromEpistolary(messageId = null) {
 /** 楼层被删、改写或换回复时回滚 */
 function onRollback(mesId, reason, redetect) {
     const st = getState();
-    if (!st || mesId == null || mesId < 0) return;
+    if (!st || mesId == null || mesId < 0 || st.backfillRun) return;
     if (redetect) {
         // 改写 / 换回复：如果这条消息识别出的日期没变，就不动
         const snap = snapshotFor(st, mesId);

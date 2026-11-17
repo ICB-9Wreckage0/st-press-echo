@@ -27,8 +27,8 @@ export const FORMAT_SPEC = `{
   "outlets": [{ "name": "刊物名（用中文常用译名，全文统一）", "originalName": "原文名", "periodicity": "daily", "weekday": null, "monthDays": [], "circle": "general", "tier": 3, "politics": ["政治/宗教倾向"], "real": true, "note": "" }],
   "persons": [{ "name": "姓名（全文统一用一个写法）", "aliases": ["别名"], "roles": ["critic"], "outlets": ["供稿的刊物名"], "reads": ["常读的刊物名"], "interests": ["关注题材"], "likes": ["欣赏"], "dislikes": ["反感"], "closeness": 0, "knowsIdentity": false, "real": true, "monthlyCapacity": 2, "columnWeekday": null, "notes": "与主角的关系、往来",
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
-  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字" }],
-  "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内" }],
+  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day" }],
+  "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
   "rumors": [{ "text": "坊间传闻", "strength": 0.5 }],
   "eraNotes": [{ "title": "标题", "text": "与时代背景有关、后续写作要遵守的事实" }]
@@ -55,7 +55,7 @@ export const FORMAT_RULES = `字段取值：
 2. reactions 只收“已经发生”的：已见报的书评/短评/八卦/论战、已寄到的私信、读者来信、剪报。计划中、传言中的不算，可以写进 rumors。
 3. readings 收“某人已经读过某作品”但没有形成书面反响的情况（例如见面时谈起、信里说读过）。
 4. 同一个人、刊物、作品全文只用一个名字；外文名放进 aliases / originalName。
-5. 日期一律 YYYY-MM-DD；只知道月份的写该月 1 日，并在 summary 或 note 里注明“日期约略”。
+5. 日期一律 YYYY-MM-DD。日期不精确时照样填一个代表日，同时填 datePrecision：day=精确到日，xun=只知道上/中/下旬（填该旬第一天），month=只知道月份（填该月 1 日），noLaterThan=只知道“不晚于”这一天（例如单行本至某日已售罄）。
 6. 只输出一个 JSON 对象，不要任何解释文字。`;
 
 /** 给外部聊天式 AI 用的完整提示词 */
@@ -110,6 +110,18 @@ function weekdayOf(v) {
 }
 const date = v => normalizeISO(str(v)) || '';
 
+const PREC = { day: '精确到日', xun: '只知道旬', month: '只知道月份', noLaterThan: '不晚于' };
+export const DATE_PRECISION = PREC;
+function precKey(v) {
+    const t = str(v);
+    if (!t || t === 'day') return '';
+    if (PREC[t]) return t;
+    if (/旬/.test(t)) return 'xun';
+    if (/月/.test(t)) return 'month';
+    if (/不晚|最晚|no.?later/i.test(t)) return 'noLaterThan';
+    return '';
+}
+
 function freqKey(v) {
     const t = str(v);
     if (REL_FREQ[t]) return t;
@@ -159,7 +171,7 @@ export function normalizeBundle(obj) {
         works: arr(b.works).map(w => (typeof w === 'string' ? { title: w } : w)).filter(w => str(w.title || w.name)).map(w => ({
             title: bare(w.title || w.name), aliases: arr(w.aliases).map(bare).filter(a => a && a !== bare(w.title || w.name)), penname: str(w.penname),
             form: enumKey(FORMS, w.form, ''), outlet: bare(w.outlet || w.outletName),
-            pubDate: date(w.pubDate), endDate: date(w.endDate), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: bare(w.versionOf),
+            pubDate: date(w.pubDate), endDate: date(w.endDate), datePrecision: precKey(w.datePrecision), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: bare(w.versionOf),
         })),
         reactions: [], readings: [],
         rumors: arr(b.rumors).map(r => (typeof r === 'string' ? { text: r } : r)).filter(r => str(r.text)).map(r => ({ text: str(r.text), strength: Math.max(0, Math.min(1, num(r.strength, 0.5))) })),
@@ -172,7 +184,7 @@ export function normalizeBundle(obj) {
         out.reactions.push({
             date: d, layer: enumKey(LAYERS, r.layer, 'notice'), person: str(r.person), outlet: bare(r.outlet || r.outletName), work: bare(r.work),
             polarity: [1, 0, -1].includes(num(r.polarity)) ? num(r.polarity) : 0, count: num(r.count),
-            title: str(r.title), summary: str(r.summary), evidence: str(r.evidence),
+            title: str(r.title), summary: str(r.summary), evidence: str(r.evidence), datePrecision: precKey(r.datePrecision),
         });
     }
     for (const r of arr(b.readings)) {
@@ -223,6 +235,17 @@ function findWork(state, title) {
     return state.works.find(w => sameName(w.title, title)) || state.works.find(w => (w.aliases || []).some(a => sameName(a, title))) || null;
 }
 
+/** 旧版整理包导入的“已发生反响”里，新整理包已经没有的（例如被合并进累计数、被删掉的重复条目） */
+export function staleImported(state, b) {
+    const nameOf = (list, id, f = 'name') => (id ? list.find(x => x.id === id)?.[f] || '' : '');
+    const eq = (a, b) => (!a && !b) || sameName(a, b);
+    return (state.ledger || []).filter(e => e.origin === 'manual' && (e.flags || []).includes('来自整理包：已发生')).filter(e => !b.reactions.some(r =>
+        r.date === e.date && r.layer === e.layer && (e.text?.title || '') === r.title && e.polarity === r.polarity
+        && eq(nameOf(state.persons, e.personId) || e.personName || '', (r.person && findPerson(state, r.person)?.name) || r.person || '')
+        && eq(nameOf(state.works, e.workId, 'title'), (r.work && findWork(state, r.work)?.title) || '')
+        && eq(nameOf(state.outlets, e.outletId), (r.outlet && findByName(state.outlets, r.outlet)?.name) || r.outlet || '')));
+}
+
 /** 预览：每类新建几个、更新几个，以及会出问题的地方 */
 export function previewBundle(state, b) {
     const pv = { counts: {}, items: {}, warnings: [...(b.warnings || [])] };
@@ -259,6 +282,7 @@ export function previewBundle(state, b) {
         if (!has('works', r.work)) miss.add(`阅读记录里的作品《${r.work}》不存在，这条会被跳过`);
     }
     pv.warnings.push(...miss);
+    pv.stale = staleImported(state, b).map(e => `${e.date} ${LAYERS[e.layer]?.label || e.layer} ${state.persons.find(p => p.id === e.personId)?.name || e.personName || ''}${e.workId ? ' 《' + (state.works.find(w => w.id === e.workId)?.title || '') + '》' : ''}${e.count ? ` 约${e.count}` : ''}`);
     if (b.storyDate && state.currentDate && cmp(b.storyDate, state.currentDate) < 0) pv.warnings.push(`整理包的日期 ${b.storyDate} 早于当前故事日期 ${state.currentDate}，不会把日期往回调`);
     return pv;
 }
@@ -275,8 +299,10 @@ function ensurePerson(state, name, report) {
     if (!p) { p = { ...blankPerson(), name, roles: [], closeness: 0 }; state.persons.push(p); report.created.push(`人物“${name}”（资料空白）`); }
     return p;
 }
-const fill = (target, src) => {
+/** 合并：默认只补充（数组取并集，空值不覆盖）；replace=true 时以新版为准，标签等数组整体替换 */
+const fill = (target, src, replace = false) => {
     for (const [k, v] of Object.entries(src)) {
+        if (Array.isArray(v) && replace && !['outletIds', 'reads'].includes(k)) { target[k] = [...v]; continue; }
         if (v == null || v === '' || (Array.isArray(v) && !v.length)) continue;
         target[k] = Array.isArray(v) && Array.isArray(target[k]) ? [...new Set([...target[k], ...v])] : v;
     }
@@ -286,15 +312,29 @@ const fill = (target, src) => {
  * 应用整理包。opts.kinds：要导入的类别；opts.dateMode：'set'（直接设为当前，不推演之间）| 'none'
  * 返回报告 { lines, created, skipped }
  */
-export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings = {}, era = null } = {}) {
+export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings = {}, era = null, sync = false } = {}) {
     const on = k => !kinds || kinds.includes(k);
-    const report = { lines: [], created: [], skipped: [] };
+    const report = { lines: [], created: [], skipped: [], removed: [] };
+    if (sync && on('reactions')) {
+        const stale = new Set(staleImported(state, b).map(e => e.id));
+        for (const e of state.ledger.filter(x => stale.has(x.id))) report.removed.push(`${e.date} ${LAYERS[e.layer]?.label || e.layer}${e.count ? ` 约${e.count}` : ''}`);
+        state.ledger = state.ledger.filter(e => !stale.has(e.id));
+    }
+    if (sync && on('readings')) {
+        // 旧版导入的阅读记录（带标记的）先撤掉，下面按新版重建
+        const old = (state.receptions || []).filter(r => r.fromBundle);
+        const oldIds = new Set(old.flatMap(r => r.eventIds || []));
+        state.ledger = state.ledger.filter(e => !(oldIds.has(e.id) && e.status !== 'approved'));
+        state.receptions = state.receptions.filter(r => !r.fromBundle);
+        for (const r of old) delete state.rolls?.[`${r.workId}|${r.personId}`];
+        if (old.length) report.lines.push(`撤掉旧版导入的阅读记录 ${old.length} 条，按新版重建`);
+    }
     if (b.place && !state.era.place) state.era.place = b.place;
 
     if (on('outlets')) for (const o of b.outlets) {
         const ex = findByName(state.outlets, o.name) || (o.originalName && findByName(state.outlets, o.originalName));
         const data = { name: o.name, periodicity: o.periodicity, weekday: o.weekday, monthDays: o.monthDays, circle: o.circle, tier: o.tier, politics: o.politics, note: [o.originalName, o.note].filter(Boolean).join('；') };
-        if (ex) { const n = ex.name; fill(ex, data); ex.name = n; ex.real = o.real; } else state.outlets.push({ ...blankOutlet(), ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== '' && v != null)), periodicity: o.periodicity || 'irregular', circle: o.circle || 'general', tier: o.tier || 3, real: o.real });
+        if (ex) { const n = ex.name; fill(ex, data, sync); ex.name = n; ex.real = o.real; } else state.outlets.push({ ...blankOutlet(), ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== '' && v != null)), periodicity: o.periodicity || 'irregular', circle: o.circle || 'general', tier: o.tier || 3, real: o.real });
     }
     if (on('persons')) for (const p of b.persons) {
         let ex = findPerson(state, p.name);
@@ -305,14 +345,15 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
             outletIds: p.outlets.map(n => ensureOutlet(state, n, report)).filter(Boolean),
             reads: p.reads.map(n => ensureOutlet(state, n, report)).filter(Boolean),
         };
-        fill(ex, data);
+        fill(ex, data, sync);
+        if (sync) { ex.outletIds = data.outletIds; ex.reads = data.reads; }
         if (p.rolesGiven) ex.roles = p.roles;
     }
     if (on('persons')) for (const p of b.persons) {
-        if (!p.relations?.length) continue;
+        if (!p.relations?.length && !(sync && findPerson(state, p.name)?.relations?.length)) continue;
         const ex = findPerson(state, p.name);
         if (!ex) continue;
-        const m = new Map((ex.relations || []).map(r => [r.to, r]));
+        const m = new Map(sync ? [] : (ex.relations || []).map(r => [r.to, r]));
         for (const r of p.relations) {
             const q = findPerson(state, r.to);
             if (!q || q.id === ex.id) { report.skipped.push(`关系：${p.name} → ${r.to}（找不到此人）`); continue; }
@@ -327,7 +368,6 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
         if (p.publicIdentityKnown) ex.publicIdentityKnown = true;
         const ids = p.knownBy.map(n => findPerson(state, n)?.id).filter(Boolean);
         ex.knownBy = [...new Set([...(ex.knownBy || []), ...ids])];
-        for (const id of ids) { const per = state.persons.find(x => x.id === id); if (per) per.knowsIdentity = true; }
     }
     if (on('works')) {
         for (const w of b.works) {
@@ -335,10 +375,10 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
             const pen = w.penname ? (findByName(state.pennames, w.penname) || (() => { const p = { ...blankPenname(), name: w.penname }; state.pennames.push(p); report.created.push(`笔名“${w.penname}”`); return p; })()) : null;
             const data = {
                 aliases: w.aliases, form: w.form, outletId: ensureOutlet(state, w.outlet, report), pubDate: w.pubDate, endDate: w.endDate,
-                themes: w.themes, summary: w.summary, pennameId: pen?.id || '',
+                themes: w.themes, summary: w.summary, pennameId: pen?.id || '', datePrecision: w.datePrecision,
             };
             if (!ex) { ex = { ...blankWork(), title: w.title, pennameId: state.pennames[0]?.id || '' }; state.works.push(ex); }
-            fill(ex, data);
+            fill(ex, data, sync);
         }
         for (const w of b.works) if (w.versionOf) {
             const ex = findWork(state, w.title); const par = findWork(state, w.versionOf);
@@ -365,6 +405,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
             workId: work?.id || null, pennameId: work?.pennameId || null,
             polarity: r.polarity, count: r.count ?? undefined, status: 'candidate',
             text: r.summary || r.title ? { title: r.title, summary: r.summary, body: '', byline: '', section: '' } : null,
+            datePrecision: r.datePrecision || undefined,
             flags: ['来自整理包：已发生'], why: r.evidence ? [`依据：${r.evidence}`] : [], repApplied: null,
         };
         state.ledger.push(ev);
@@ -390,7 +431,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
         const hist = state.currentDate ? { ...settings, publicBefore: state.currentDate, privateBefore: state.currentDate } : settings;
         // 同一部作品若他也有署名反响，用反响的态度
         const kn = r.known || (() => { const x = b.reactions.find(y => y.person && sameName(y.person, r.person) && sameName(y.work, r.work) && !['reader_letters', 'mentions'].includes(y.layer)); return x ? { polarity: x.polarity, source: LAYERS[x.layer]?.label } : null; })();
-        try { recordManualReading(state, hist, era, { workId: work.id, personId: person.id, date: r.date, read: r.read, note: r.note || '整理包', known: kn }); } catch (e) { report.skipped.push(`阅读：${e.message}`); }
+        try { const rc = recordManualReading(state, hist, era, { workId: work.id, personId: person.id, date: r.date, read: r.read, note: r.note || '整理包', known: kn }); rc.fromBundle = true; } catch (e) { report.skipped.push(`阅读：${e.message}`); }
     }
     if (on('rumors')) for (const r of b.rumors) {
         if ((state.rumors || []).some(x => sameName(x.text, r.text))) continue;

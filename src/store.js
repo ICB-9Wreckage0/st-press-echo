@@ -115,9 +115,18 @@ export function resetState() {
     return c.chatMetadata[MODULE];
 }
 
+/** 这份数据像不像“整理包”（而不是插件自己导出的存档） */
+export function looksLikeBundleData(obj) {
+    if (!obj || typeof obj !== 'object') return false;
+    if (obj.format === 'press-echo-import') return true;
+    const noId = list => Array.isArray(list) && list.length && list.some(x => x && typeof x === 'object' && !x.id);
+    return noId(obj.persons) || noId(obj.works) || noId(obj.pennames) || noId(obj.outlets);
+}
+
 export function replaceState(obj) {
     const c = ctx();
     if (!c?.chatMetadata) return null;
+    if (looksLikeBundleData(obj)) throw new Error('这是“整理包”，不是插件导出的存档。请到“导入与整理”页读取整理包（会先给出预览，再按名字合并）。');
     c.chatMetadata[MODULE] = Object.assign(defaultState(), obj || {});
     saveState();
     return c.chatMetadata[MODULE];

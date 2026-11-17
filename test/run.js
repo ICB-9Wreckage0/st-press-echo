@@ -289,3 +289,20 @@ const sR = defaultState(); B.applyBundle(sR, nbR, { settings: S });
 const vr = sR.persons.find(p => p.name === '瓦莱特').relations[0];
 assert.equal(vr.to, sR.persons.find(p => p.name === '拉希尔德').id); assert.equal(vr.type, 'family'); assert.equal(vr.trust, 0.9); assert.equal(vr.frequency, 'daily');
 console.log('v0.8 ✓', { talked, bRead, leaks });
+
+// —— 以新版为准 ——
+const nbOld = B.normalizeBundle({ works: [{ title: '长子', pubDate: '1890-04-15' }], reactions: [{ date: '1890-04-15', layer: 'reader_letters', work: '长子', count: 14 }, { date: '1890-04-22', layer: 'reader_letters', work: '长子', count: 82 }], persons: [{ name: '甲' }] });
+const nbNew = B.normalizeBundle({ works: [{ title: '长子', pubDate: '1890-04-15' }], reactions: [{ date: '1890-04-22', layer: 'reader_letters', work: '长子', count: 82 }], persons: [{ name: '甲' }] });
+const sy = defaultState();
+B.applyBundle(sy, nbOld, { settings: S });
+assert.deepEqual(B.previewBundle(sy, nbNew).stale.length, 1);
+B.applyBundle(sy, nbNew, { settings: S, sync: true });
+assert.deepEqual(sy.ledger.filter(e => e.layer === 'reader_letters').map(e => e.count), [82]);
+console.log('以新版为准 ✓');
+// 以新版为准时，标签和关系整体替换
+const sx = defaultState();
+B.applyBundle(sx, B.normalizeBundle({ persons: [{ name: '甲', likes: ['《长子》克制'], relations: [{ to: '乙' }] }, { name: '乙' }] }), { settings: S });
+B.applyBundle(sx, B.normalizeBundle({ persons: [{ name: '甲', likes: ['克制叙事'], relations: [{ to: '乙', since: '1890-05-17' }] }, { name: '乙' }] }), { settings: S, sync: true });
+const jia = sx.persons.find(p => p.name === '甲');
+assert.deepEqual(jia.likes, ['克制叙事']); assert.equal(jia.relations.length, 1); assert.equal(jia.relations[0].since, '1890-05-17');
+console.log('以新版为准替换标签和关系 ✓');
