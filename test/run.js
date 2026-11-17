@@ -101,7 +101,7 @@ console.log('声誉：', JSON.stringify(st.reputation));
 console.log('传闻：', st.rumors.map(r => `${r.text.slice(0,20)}… ${r.strength}`));
 
 // 可复现：同种子重跑
-const fresh = () => { const x = JSON.parse(JSON.stringify(st)); x.ledger = []; x.rolls = {}; x.reputation = {}; x.rumors = []; x.receptions = []; x.snapshots = []; x.currentDate = '1890-04-12'; return x; };
+const fresh = () => { const x = JSON.parse(JSON.stringify(st)); x.ledger = []; x.rolls = {}; x.reputation = {}; x.rumors = []; x.receptions = []; x.snapshots = []; x.followers = {}; x.impressions = {}; x.recommends = {}; x.identityLeaks = []; x.currentDate = '1890-04-12'; return x; };
 const st2 = fresh();
 let d2 = '1890-04-12'; while (d2 < '1890-08-30') { d2 = addDays(d2, 3); if (d2 > '1890-08-30') d2 = '1890-08-30'; advanceTo(st2, d2, S, null); }
 assert.deepEqual(st2.ledger.map(e => e.key + e.date).sort(), st.ledger.map(e => e.key + e.date).sort());
@@ -234,3 +234,58 @@ assert.equal(sb.ledger.filter(e => e.origin === 'manual').length, 2);
 assert.equal(sb.persons.length, 2);
 assert(B.buildExternalPrompt(sb).includes('奥克塔夫·米尔博'));
 console.log("整理包 ✓", brep.created);
+
+// —— 回溯推演 ——
+const { backfill } = await import('../src/engine.js');
+const sbf = defaultState(); sbf.seed = 'bf';
+B.applyBundle(sbf, nb2, { settings: S });
+sbf.works.find(w => w.title === '长子').pubDate = '1890-04-15';
+const manualBefore = sbf.ledger.filter(e => e.origin === 'manual').length;
+const bfr = backfill(sbf, S, null, { mode: 'hidden' });
+assert.equal(sbf.currentDate, '1890-09-05');
+assert.equal(sbf.ledger.filter(e => e.origin === 'manual').length, manualBefore, '导入记录保留');
+assert(sbf.ledger.filter(e => e.backfill).every(e => e.date > '1890-09-05'), '只补看不见的部分时，当前日期之前不新增事件');
+assert.equal(bfr.candidates, 0);
+const bfr2 = backfill(sbf, S, null, { mode: 'all' });
+assert(sbf.ledger.filter(e => e.backfill).every(e => e.status !== 'approved'), '回溯事件不自动入账');
+console.log('回溯推演 ✓', JSON.stringify({ hidden: bfr.receptions, all: bfr2.candidates }));
+
+// —— v0.8：语义匹配、熟人传播、关系导入、看法状态 ——
+const C = await import('../src/concepts.js');
+C.useConcepts(null);
+assert.equal(C.tagSim('家庭责任', '家庭伦理'), 0.4, '共用词根算弱匹配');
+assert.equal(C.tagSim('家庭责任', '家庭伦理', false), 0, '弱匹配不用于褒贬');
+assert.equal(C.tagSim('无政府主义', '女权主义'), 0, '“主义”不算词根');
+C.useConcepts({ map: { '家庭责任': [0], '长子困境': [0], '道德义务': [0] }, groups: ['家庭与义务'] });
+assert.equal(C.tagSim('长子困境', '道德义务', false), 0.75, '同一概念组');
+C.useConcepts(null);
+const E = await import('../src/engine.js');
+const sr2 = defaultState(); sr2.seed = 'talk';
+sr2.outlets = [{ id: 'o1', name: '回声报', periodicity: 'daily', tier: 4, circle: 'general', politics: [], sections: [] }];
+sr2.pennames = [{ id: 'pe', name: 'E.E.', knownBy: ['a'] }];
+sr2.works = [{ id: 'w', title: '长子', pennameId: 'pe', form: 'article', outletId: 'o1', pubDate: '1890-04-15', themes: ['家庭'] }];
+sr2.persons = [
+  { id: 'a', name: '甲', roles: ['critic'], outletIds: [], reads: ['o1'], interests: ['家庭'], likes: ['家庭'], dislikes: [], closeness: 3, active: true,
+    relations: [{ to: 'b', type: 'friend', closeness: 3, frequency: 'daily', trust: 0.9, discloseOpinions: true, discloseIdentity: true }] },
+  { id: 'b', name: '乙', roles: [], outletIds: [], reads: [], interests: [], likes: [], dislikes: [], closeness: 0, active: true },
+];
+let talked = 0, leaks = 0, bRead = 0;
+for (let i = 0; i < 60; i++) {
+  const t = JSON.parse(JSON.stringify(sr2)); t.seed = 'talk' + i;
+  E.recordManualReading(t, S, null, { workId: 'w', personId: 'a', date: '1890-04-16' });
+  const ra = t.receptions.find(r => r.personId === 'a');
+  if (ra.strength !== 'none' && ra.why.some(x => x.startsWith('和熟人谈起'))) talked++;
+  E.advanceTo(t, '1890-06-01', S, null);
+  if (t.receptions.some(r => r.personId === 'b' && r.channel === 'recommend')) bRead++;
+  leaks += (t.identityLeaks || []).length;
+  assert(!t.pennames[0].knownBy.includes('b'), '身份不会自动泄露');
+}
+assert(talked > 10 && bRead > 5 && leaks > 0, `熟人传播应发生：谈起 ${talked}，乙因此接触 ${bRead}，可能泄露 ${leaks}`);
+assert.equal(E.opinionStatus({ read: 'finished', strength: 'none', expression: 'silent' }), 'shallow');
+assert.equal(E.opinionStatus({ read: 'finished', strength: 'mild', expression: 'silent' }), 'unanalyzed');
+assert.equal(E.opinionStatus({ read: 'finished', strength: 'mild', expression: 'silent', opinion: { summary: 'x' } }), 'private');
+const nbR = B.normalizeBundle({ persons: [{ name: '瓦莱特', relations: [{ to: '拉希尔德', type: '家人/伴侣', frequency: '每天', closeness: 3, trust: '高', discloseIdentity: false }] }, { name: '拉希尔德' }] });
+const sR = defaultState(); B.applyBundle(sR, nbR, { settings: S });
+const vr = sR.persons.find(p => p.name === '瓦莱特').relations[0];
+assert.equal(vr.to, sR.persons.find(p => p.name === '拉希尔德').id); assert.equal(vr.type, 'family'); assert.equal(vr.trust, 0.9); assert.equal(vr.frequency, 'daily');
+console.log('v0.8 ✓', { talked, bRead, leaks });

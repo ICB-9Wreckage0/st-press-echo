@@ -4,9 +4,9 @@ import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON } fr
 import { weekdayZh, normalizeISO, yearOf, cmp } from './date.js';
 import {
     FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, repLabel, setStatus, rerollWork, advanceTo, byId, columnSlots,
-    READ_STATES, STRENGTH, EXPRESSION, CHANNELS, isMajor, recordManualReading,
+    READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, simulate, impressionAt, IMPRESSION_LABEL, seriesKey,
 } from './engine.js';
-import { buildEvidenceCard, cardText, generateOpinion } from './analysis.js';
+import { buildEvidenceCard, cardText, generateOpinion, OPINION_DIMS } from './analysis.js';
 import {
     epistolaryAvailable, epistolaryStoryDate, scanLetters, peopleProposals, loadBackup, clearBackup, backupInfo, archiveSource,
     effectiveScope, listArticles, articleBody, letterText,
@@ -20,6 +20,7 @@ import {
 import { extractFromText, loadWorldbookText } from './extract.js';
 import { callLLM } from './llm.js';
 import { Fab } from './fab.js';
+import { buildConcepts, unclassified, allTags, conceptGroups } from './concepts.js';
 import { planImport, readTextFile, parseFileName } from './txtimport.js';
 import {
     FORMAT_SPEC, FORMAT_RULES, buildExternalPrompt, normalizeBundle, mergeBundles, previewBundle, applyBundle, organize,
@@ -38,6 +39,7 @@ let txtPlan = []; // txt 批量导入的预览（正文只放在内存里，导�
 let txtOverwrite = false;
 let materials = []; // 一键整理的材料（只在内存里）：{ id, label, kind, text }
 let orgAbort = null;
+let simView = null; // 预演视图：{ kind: 'work'|'person', ... }
 
 const toast = (type, msg) => (globalThis.toastr?.[type] ? globalThis.toastr[type](msg, '报刊回声') : console.log('[报刊回声]', msg));
 
@@ -121,6 +123,10 @@ function penChip(st, id) {
     const p = byId(st.pennames, id);
     return p ? `<span class="pe-chip pe-pen" style="--c:${penColor(st, id)}">${h(p.name)}</span>` : '';
 }
+/** 书名加书名号；书名里已经带书名号的（如“《生者与死亡》第一册”）原样显示 */
+const bt = t => { const x = String(t ?? ''); return x.includes('《') ? h(x) : `《${h(x)}》`; };
+const statusChip = r => { const k = opinionStatus(r); return k === 'unread' ? '' : `<span class="pe-chip pe-op-${k}" title="${k === 'unanalyzed' ? '读过，但还没让模型生成具体看法' : k === 'shallow' ? '推演结果：读了但印象不深' : k === 'private' ? '已生成具体看法，尚未对外表达' : '在谈话、书信或文章里表达过'}">${OPINION_STATUS[k]}</span>`; };
+const dimsHtml = d => (d && Object.entries(OPINION_DIMS).some(([k]) => d[k] != null)) ? `<span class="pe-dims">${Object.entries(OPINION_DIMS).filter(([k]) => d[k] != null).map(([k, v]) => `<span class="pe-dim pe-dim${Math.sign(d[k])}" title="${v} ${d[k] > 0 ? '+' : ''}${d[k]}">${v}${'●'.repeat(Math.abs(d[k]) || 0) || '○'}</span>`).join('')}</span>` : '';
 const closeOf = p => Math.max(0, Math.min(3, Number(p?.closeness) || 0));
 /** 人名按私交着色；陌生人不加色点 */
 function personTag(p, fallback = '') {
@@ -184,6 +190,7 @@ const WORK_SPEC = [
     { key: 'endDate', label: '连载结束日', type: 'date', placeholder: 'YYYY-MM-DD，可空' },
     { key: 'themes', label: '题材标签', type: 'tags' },
     { key: 'summary', label: '内容摘要', type: 'textarea', rows: 3 },
+    { key: 'series', label: '系列', hint: '同系列的作品（如《生者与死亡》各册）读者最想接着找来读。留空则从书名推断，去掉“第一册”“（上）”之类' },
     { key: 'parentId', label: '同一作品的另一个版本', type: 'select', options: optsOf(s => s.works, 'title'), hint: '如单行本对应的连载版。读过另一版本的人不太会再读一遍' },
     { key: 'sourceText', label: '原文（用于生成证据卡，可粘贴全文）', type: 'textarea', rows: 6 },
 ];
@@ -321,7 +328,7 @@ export function refresh() {
     fab?.setBadge(pending);
     fab?.setVisible(!!s.enabled);
     if (!st) { body.innerHTML = '<div class="pe-empty">请先打开一个聊天。</div>'; return; }
-    const render = { overview, queue, ledger, reading, works, people, era, importTab, settings }[tab === 'import' ? 'importTab' : tab];
+    const render = simView ? simPage : { overview, queue, ledger, reading, works, people, era, importTab, settings }[tab === 'import' ? 'importTab' : tab];
     const y = body.scrollTop;
     const active = document.activeElement;
     if (active && body.contains(active)) active.blur();
@@ -379,6 +386,8 @@ function overview(st, s) {
       <div class="pe-stat" data-tab-go="reading"><b>${readers}</b><span>读过的人次</span></div>
     </div>
     ${lastReport ? `<div class="pe-muted pe-report">上次推进 ${h(lastReport.from || '起点')} → ${h(lastReport.to)}：${lastReport.newCandidates.filter(x => x.status === 'candidate').length} 条待审核，${lastReport.autoApproved.length} 条次要反响自动入账，新排期 ${lastReport.scheduled} 条。</div>` : ''}
+    ${backfillHint(st)}
+    ${leaksBlock(st)}
     ${cand ? `<div class="pe-callout pe-callout-accent">有 <b>${cand}</b> 条反响等你确认。<button class="pe-primary" data-tab-go="queue">去审核</button></div>` : ''}
 
     <h4>最近入账</h4>
@@ -406,12 +415,143 @@ function overview(st, s) {
         <button data-act="place-guess">从聊天猜测</button>
       </div>
     </details>
+    <details class="pe-fold"><summary>回溯推演：补上从首次发表到现在的经过</summary>${backfillBody(st)}</details>
     <details class="pe-fold"><summary>日志</summary>
       <ul class="pe-log">${(st.log || []).slice(0, 30).map(l => `<li><span class="pe-muted">${h(l.date || '')}</span> ${h(l.text)}</li>`).join('')}</ul>
     </details>`;
 }
 
 /** 一条反响的卡片。actions 是右侧按钮的 HTML */
+// ———————————— 预演视图 ————————————
+
+const pctTxt = p => `${Math.round((p || 0) * 100)}%`;
+const bar = (p, cls = '') => `<span class="pe-bar ${cls}"><i style="width:${Math.round(Math.min(1, p || 0) * 100)}%"></i></span><b>${pctTxt(p)}</b>`;
+const polBar = r => `<span class="pe-polbar" title="偏肯定 ${pctTxt(r.pos)} · 参半 ${pctTxt(r.mid)} · 偏批评 ${pctTxt(r.neg)}"><i class="p1" style="width:${r.pos * 100}%"></i><i class="p0" style="width:${r.mid * 100}%"></i><i class="p-1" style="width:${r.neg * 100}%"></i></span>`;
+
+function simPage(st, s) {
+    return `<div class="pe-toolbar"><button data-act="sim-close">← 返回</button><span class="pe-muted">预演在数据副本上进行，不会改动任何记录。</span></div>`
+        + (simView.kind === 'work' ? simWorkPage(st, s) : simPersonPage(st, s));
+}
+
+function simWorkPage(st) {
+    const w = byId(st.works, simView.workId);
+    if (!w) return '<div class="pe-empty">作品不存在。</div>';
+    const r = simView.result;
+    const manualPeople = st.persons.filter(p => st.receptions.some(x => x.workId === w.id && x.personId === p.id && x.origin === 'manual'));
+    return `
+    <h4>推演${bt(w.title)} ${penChip(st, w.pennameId)}</h4>
+    <div class="pe-toolbar">
+      <label class="pe-inline-field">刊物 <select id="pe-sim-outlet"><option value="">（无刊物/自行出版）</option>${st.outlets.map(o => `<option value="${o.id}" ${o.id === (simView.outletId ?? w.outletId) ? 'selected' : ''}>${h(o.name)}</option>`).join('')}</select></label>
+      <label class="pe-inline-field">发表日期 <input id="pe-sim-date" type="text" value="${h(simView.pubDate || w.pubDate || st.currentDate || '')}" placeholder="YYYY-MM-DD" style="width:8.5em"></label>
+      <label class="pe-inline-field">只看到 <input id="pe-sim-until" type="text" value="${h(simView.until || '')}" placeholder="截止日期，可空" style="width:8.5em"></label>
+      <label class="pe-inline-field">推演次数 <select id="pe-sim-runs">${[20, 40, 100].map(n => `<option ${n === (simView.runs || 40) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <button class="pe-primary" data-act="sim-work-run">推演</button>
+    </div>
+    <div class="pe-muted">换个刊物或日期，就是“假如改投给某刊 / 推迟发表”会怎样。每次用不同的随机数推演，百分比是这些次里发生的比例。</div>
+    ${r ? `
+    <div class="pe-stats">
+      <div class="pe-stat"><b>${r.expectContact.toFixed(1)}</b><span>人可能接触到</span></div>
+      <div class="pe-stat pe-stat-hot"><b>${r.expectReaders.toFixed(1)}</b><span>人预计会读</span></div>
+      <div class="pe-stat"><b>${r.expectPublic.toFixed(2)}</b><span>篇公开评论（期望）</span></div>
+      <div class="pe-stat"><b>${r.expectLetters.toFixed(2)}</b><span>封私信（期望）</span></div>
+    </div>
+    <div class="pe-muted">${r.until ? `只统计到 ${h(r.until)}。` : ''}另有约 ${r.expectSeekers.toFixed(1)} 人会因此去找作者的其他作品（同系列最想找；旧报纸不一定找得到）。${r.outlets.length ? `公开评论最可能出现在：${r.outlets.slice(0, 4).map(o => `${h(byId(st.outlets, o.outletId)?.name || '?')}（${o.n.toFixed(2)} 篇）`).join('、')}。` : ''}</div>
+    ${manualPeople.length ? `<div class="pe-muted">已有阅读记录、不参与预演：${manualPeople.map(p => personTag(p)).join('、')}</div>` : ''}
+    <div class="pe-simtable">
+      <div class="pe-simrow pe-simhead"><span>人物</span><span>接触</span><span>读</span><span>倾向</span><span>公开发表</span><span>私信</span><span>去找旧作</span></div>
+      ${r.rows.filter(x => x.contact > 0 || x.read > 0).map(x => { const p = byId(st.persons, x.personId); return `<details class="pe-simrow-wrap"><summary class="pe-simrow">
+        <span>${personTag(p)}</span><span>${bar(x.contact)}</span><span>${bar(x.read, 'hot')}</span><span>${x.read ? polBar(x) : '—'}</span>
+        <span>${bar(x.public)}${x.layer ? ` <small>${h(LAYERS[x.layer]?.label || '')}</small>` : ''}</span><span>${bar(x.letter)}</span><span>${bar(x.seek)}</span></summary>
+        <div class="pe-simdetail">${x.medianRead ? `一般在 <b>${h(x.medianRead)}</b> 前后读到。` : ''}${x.outletId ? `若公开发表，多半在《${h(byId(st.outlets, x.outletId)?.name || '')}》。` : ''}
+          ${x.alsoRead.length ? `<div>顺带找来读的：${x.alsoRead.slice(0, 5).map(a => `${bt(byId(st.works, a.workId)?.title || '')}${pctTxt(a.p)}`).join('、')}</div>` : ''}
+          ${x.sample ? `<div class="pe-muted">其中一次推演的经过：</div><ol class="pe-why-ol">${x.sample.why.map(t => `<li>${h(t)}</li>`).join('')}</ol>` : ''}</div></details>`; }).join('')}
+    </div>
+    ${r.rows.every(x => !x.contact) ? '<div class="pe-empty-sm">没有人接触得到。检查人物的“常读的报刊”和私交。</div>' : ''}` : ''}`;
+}
+
+function simPersonPage(st) {
+    const p = byId(st.persons, simView.personId);
+    if (!p) return '<div class="pe-empty">人物不存在。</div>';
+    const works = [...st.works].filter(w => w.pubDate).sort((a, b) => cmp(a.pubDate, b.pubDate));
+    const recOf = w => (st.receptions || []).filter(r => r.workId === w.id && r.personId === p.id && !r.superseded)
+        .sort((a, b) => ['finished', 'skimmed', 'ignored', 'none'].indexOf(a.read) - ['finished', 'skimmed', 'ignored', 'none'].indexOf(b.read))[0];
+    const fol = st.pennames.map(pen => ({ pen, since: st.followers?.[pen.id]?.[p.id], imp: impressionAt(st, pen.id, p.id, st.currentDate), hist: st.impressions?.[pen.id]?.[p.id] || [] })).filter(x => x.hist.length || x.since);
+    const odds = simView.odds || {};
+    const wi = simView.whatIf;
+    const r = simView.result;
+    const x = r?.rows?.[0];
+    return `
+    <h4>${personTag(p)} <span class="pe-chip pe-close-chip" style="--c:${CLOSE_COLOR[closeOf(p)]}">${CLOSE[closeOf(p)]}</span>
+      <small class="pe-muted">${(p.roles || []).map(r2 => ROLES[r2]).join('/') || '不公开写评论'} · 常读：${[...new Set([...(p.reads || []), ...(p.outletIds || [])])].map(id => byId(st.outlets, id)?.name).filter(Boolean).join('、') || '（默认：供稿刊物和大报）'}</small></h4>
+    ${fol.length ? `<h5>作者印象 <small class="pe-muted">和“欣赏/反感”分开：那是长期口味，这里是读过之后对这个署名的看法，按时间累积，可升可降</small></h5>
+      ${fol.map(f => `<div class="pe-callout">${penChip(st, f.pen.id)} 截至 ${h(st.currentDate || '')}：<b>${IMPRESSION_LABEL(f.imp)}</b>（${f.imp.toFixed(2)}）
+        ${f.since ? ` · 约 ${h(f.since)} 起开始留意这个署名` : ''}
+        <div class="pe-muted">${f.hist.slice().sort((a, b) => cmp(a.date, b.date)).map(x => `${h(x.date)} 读${bt(byId(st.works, x.workId)?.title || '')}${x.delta >= 0 ? '+' : ''}${x.delta}`).join(' → ')}</div>
+        <div class="pe-muted">印象 ≥ 1 时，此后的新作会经“追读”渠道读到；只看他当时已有的印象，以后的看法不会倒过来影响以前。他是否知道这个笔名背后是谁另算（“知道笔名身份”），对一个笔名的印象也不会转到另一个笔名上。</div></div>`).join('')}` : ''}
+    ${relationsOf(st, p).length ? `<h5>熟人 <small class="pe-muted">读到东西可能谈起的对象</small></h5><div class="pe-era-chips pe-era-chips-wrap">${relationsOf(st, p).map(r => { const q = byId(st.persons, r.to); return q ? `<span class="pe-chip">${personTag(q)} ${h(REL_TYPES[r.type] || '')} · ${h(REL_FREQ[r.frequency] || '')}${r.implicit ? '（同刊同事）' : ''}${r.discloseIdentity ? ' · 可能说出身份' : ''}</span>` : ''; }).join('')}</div>` : ''}
+    <h5>和各部作品的关系（截至 ${h(st.currentDate || '')}）</h5>
+    ${works.map(w => { const rc = recOf(w); const future = rc?.readDate && st.currentDate && rc.readDate > st.currentDate; const o = odds[w.id];
+      return `<div class="pe-card pe-card-slim pe-colored" style="--c:${penColor(st, w.pennameId) || 'var(--pe-border)'}"><div class="pe-card-main">
+        <b>${bt(w.title)}</b> <small class="pe-muted">${h(w.pubDate)}</small>
+        ${rc ? `${rc.channel ? ` · ${h(CHANNELS[rc.channel] || '')}` : ''} · <b>${future ? '尚未读到' : h(READ_STATES[rc.read] || rc.read || '未推演')}</b>${rc.readDate && !future ? ` ${h(rc.readDate)}` : ''}${rc.strength && !future ? ` · <span class="pe-chip pe-pol pe-pol${rc.polarity}">${['偏批评', '参半', '偏肯定'][rc.polarity + 1]}</span> ${h(STRENGTH[rc.strength])} ${statusChip(rc)}` : ''}${rc.expression && !future ? ` · ${h(EXPRESSION[rc.expression])}` : ''}${rc.origin === 'manual' ? ' <span class="pe-chip">手动/导入</span>' : ''}${rc.seek ? ' <span class="pe-chip pe-chip-layer">由此开始追读</span>' : ''}`
+          : ' · <span class="pe-muted">还没推演</span>'}
+        ${rc?.opinion && !(rc.readDate && st.currentDate && rc.readDate > st.currentDate) ? `<div class="pe-evi">${h(rc.opinion.summary || '')} ${dimsHtml(rc.opinion.dimensions)}${rc.opinion.authorView ? `<div>对作者：${h(rc.opinion.authorView)}</div>` : ''}</div>` : ''}
+        ${o ? `<div class="pe-muted">若重新推演：读到 ${pctTxt(o.read)}，偏肯定 ${pctTxt(o.read ? o.pos : 0)}，公开发表 ${pctTxt(o.public)}，写信 ${pctTxt(o.letter)}</div>` : ''}
+        ${rc?.why?.length ? `<details class="pe-why"><summary>为什么？</summary><ol>${rc.why.map(t => `<li>${h(t)}</li>`).join('')}</ol></details>` : ''}
+      </div><div class="pe-card-actions"><button class="pe-mini" data-act="sim-person-pick" data-id="${w.id}">假如他读到…</button></div></div>`; }).join('')}
+    <div class="pe-toolbar"><button data-act="sim-person-odds">估算他读到每部作品的可能性</button></div>
+
+    <h4>假如……</h4>
+    <div class="pe-toolbar">
+      <label class="pe-inline-field">他在 <input id="pe-sim-pdate" type="text" value="${h(wi?.date || st.currentDate || '')}" style="width:8.5em"></label>
+      <label class="pe-inline-field">读完了 <select id="pe-sim-pwork">${works.map(w => `<option value="${w.id}" ${w.id === wi?.workId ? 'selected' : ''}>${bt(w.title)}</option>`).join('')}</select></label>
+      <label class="pe-inline-field">推演次数 <select id="pe-sim-runs">${[40, 100].map(n => `<option ${n === (simView.runs || 40) ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <button class="pe-primary" data-act="sim-person-run">推演</button>
+    </div>
+    ${x ? `
+    <div class="pe-stats">
+      <div class="pe-stat"><span>看法</span>${polBar(x)}<span>偏肯定 ${pctTxt(x.pos)} · 参半 ${pctTxt(x.mid)} · 偏批评 ${pctTxt(x.neg)}；看法强烈 ${pctTxt(x.strong)}</span></div>
+      <div class="pe-stat"><b>${pctTxt(x.public)}</b><span>会公开写${x.layer ? `（多为${h(LAYERS[x.layer]?.label || '')}${x.outletId ? '，登在《' + h(byId(st.outlets, x.outletId)?.name || '') + '》' : ''}）` : ''}</span></div>
+      <div class="pe-stat"><b>${pctTxt(x.letter)}</b><span>会写信给作者</span></div>
+      <div class="pe-stat pe-stat-hot"><b>${pctTxt(x.seek)}</b><span>会去找作者的其他作品</span></div>
+    </div>
+    ${x.alsoRead.length ? `<div><b>会找来读的</b>：${x.alsoRead.map(a => `<span class="pe-chip">${bt(byId(st.works, a.workId)?.title || '')}${pctTxt(a.p)}</span>`).join(' ')}</div>
+      <div class="pe-muted">旧作找不找得到也有关系：成书和小册子好买，旧报纸要翻合订本。</div>` : x.seek ? '' : '<div class="pe-muted">不太会去找其他作品。</div>'}
+    ${x.sample ? `<details class="pe-why"><summary>其中一次推演的经过</summary><ol>${x.sample.why.map(t => `<li>${h(t)}</li>`).join('')}</ol></details>` : ''}
+    <div class="pe-toolbar">${wi?.date && st.currentDate && wi.date <= st.currentDate ? `<button class="pe-primary" data-act="sim-person-commit">这件事确实发生了，记下来</button><span class="pe-muted">记下后按正式规则推演他之后的反应（只取一种结果，不是概率）</span>` : `<span class="pe-muted">日期晚于当前故事日期，只能预演，不能记为已发生。</span>`}</div>` : ''}`;
+}
+
+function backfillBody(st) {
+    const pubs = st.works.map(w => w.pubDate).filter(Boolean).sort();
+    if (!pubs.length || !st.currentDate) return '<div class="pe-muted">需要先有故事日期和带发表日期的作品。</div>';
+    return `<div class="pe-muted">从最早的作品（${h(pubs[0])}）起，按规则把到 ${h(st.currentDate)} 为止的经过推演一遍。手动录入和导入的记录、你已入账的都保留；之前推演出但没入账的会重新生成。</div>
+      <div class="pe-toolbar">
+        <button class="pe-primary" data-act="backfill" data-mode="hidden" title="已导入的剪报、来信视为当时的全部公开报道和私信">只补看不见的部分（推荐）</button>
+        <button data-act="backfill" data-mode="all">连公开报道和私信也补（逐条审核）</button>
+      </div>
+      <ul class="pe-era-ul pe-muted">
+        <li><b>只补看不见的部分</b>：已导入的剪报、读者来信、私信视为当时的全部，不会多出主角没收到过的信或没见过的报道。补的是谁读过哪部作品、私下怎么看、圈子里怎么谈，以及这些人以后会不会对旧作发声。</li>
+        <li><b>全部补</b>：导入的记录不全时用。会多出一批标着“回溯”的书评、私信、转载，进入待审核，不自动入账，你挑合理的留下。</li>
+      </ul>`;
+}
+
+function leaksBlock(st) {
+    const list = (st.identityLeaks || []).filter(x => x.status === 'pending' && (!st.currentDate || cmp(x.date, st.currentDate) <= 0));
+    if (!list.length) return '';
+    return `<div class="pe-callout pe-callout-warn"><div><b>可能的身份知情扩散（${list.length}）</b> <span class="pe-muted">推演认为有人可能在谈话里说出了作者是谁。不会自动生效，由你决定。</span>
+      ${list.map(x => `<div class="pe-row">${h(x.date)} ${personTag(byId(st.persons, x.from))} → ${personTag(byId(st.persons, x.to))}：${penChip(st, x.pennameId)} 的身份（谈起${bt(byId(st.works, x.workId)?.title || '')}时）
+        <button class="pe-mini" data-act="leak-yes" data-id="${x.id}">确有其事</button><button class="pe-mini" data-act="leak-no" data-id="${x.id}">没有</button></div>`).join('')}</div></div>`;
+}
+
+function backfillHint(st) {
+    if (!st.currentDate || st.backfilledAt) return '';
+    const early = st.works.filter(w => w.pubDate && cmp(w.pubDate, st.currentDate) < 0);
+    const engineRecs = (st.receptions || []).filter(r => r.origin !== 'manual').length;
+    if (!early.length || engineRecs) return '';
+    return `<div class="pe-callout">已有 ${early.length} 部作品在 ${h(st.currentDate)} 之前发表，但还没有推演过这期间文学界的变化。
+      <button class="pe-primary" data-act="backfill" data-mode="hidden">回溯推演</button><span class="pe-muted">说明和另一种方式见下方“回溯推演”</span></div>`;
+}
+
 function evCard(st, e, actions = '', { compact = false } = {}) {
     const person = byId(st.persons, e.personId);
     const outlet = byId(st.outlets, e.outletId);
@@ -428,9 +568,9 @@ function evCard(st, e, actions = '', { compact = false } = {}) {
           <span class="pe-card-date">${h(e.date)}</span><span class="pe-muted">${weekdayZh(e.date)}</span>
           <span class="pe-chip pe-chip-layer">${h(LAYERS[e.layer]?.label || e.layer)}</span>${pol}
           ${major && e.status === 'candidate' ? '<span class="pe-chip pe-chip-major">需确认</span>' : ''}
-          ${e.origin === 'manual' ? '<span class="pe-chip">手动</span>' : ''}${e.auto ? '<span class="pe-chip">自动入账</span>' : ''}${e.reactsTo ? '<span class="pe-chip">回应前文</span>' : ''}${e.epiLetterId ? '<span class="pe-chip">来自书信簿</span>' : ''}
+          ${e.origin === 'manual' ? '<span class="pe-chip">手动</span>' : ''}${e.auto ? '<span class="pe-chip">自动入账</span>' : ''}${e.reactsTo ? '<span class="pe-chip">回应前文</span>' : ''}${e.epiLetterId ? '<span class="pe-chip">来自书信簿</span>' : ''}${e.backfill ? '<span class="pe-chip" title="回溯推演补出来的，原记录里没有">回溯</span>' : ''}
         </div>
-        <div class="pe-card-title">${whoText || '<span class="pe-muted">（未指定）</span>'}${work ? ` <span class="pe-muted">评</span> 《${h(work.title)}》 ${st.pennames.length > 1 ? penChip(st, work.pennameId) : ''}` : ''}</div>
+        <div class="pe-card-title">${whoText || '<span class="pe-muted">（未指定）</span>'}${work ? ` <span class="pe-muted">评</span> ${bt(work.title)} ${st.pennames.length > 1 ? penChip(st, work.pennameId) : ''}` : ''}</div>
         ${e.text?.title ? `<div class="pe-card-sub">「${h(e.text.title)}」${e.text.byline ? ` <span class="pe-muted">${h(e.text.byline)}</span>` : ''}</div>` : ''}
         ${sum ? `<div class="pe-card-sum">${h(compact ? truncate(sum, 90) : sum)}</div>` : ''}
         ${!compact && e.why?.length ? `<details class="pe-why"><summary>为什么会发生？</summary><ol>${e.why.map(w => `<li>${h(w)}</li>`).join('')}</ol></details>` : ''}
@@ -519,14 +659,15 @@ function reading(st) {
             const future = r.readDate && st.currentDate && r.readDate > st.currentDate;
             return `<li>${personTag(p, '?')} · ${h(CHANNELS[r.channel] || r.channel || '')} ${h(r.contactDate || '')}
               · ${future ? '尚未读到' : h(READ_STATES[r.read] || r.read)}${r.readDate && !future ? ' ' + h(r.readDate) : ''}
-              ${!future && r.strength ? `· <span class="pe-pol pe-pol${r.polarity}">${['偏批评', '参半', '偏肯定'][r.polarity + 1]}</span> ${h(STRENGTH[r.strength])}` : ''}
+              ${!future && r.strength ? `· <span class="pe-pol pe-pol${r.polarity}">${['偏批评', '参半', '偏肯定'][r.polarity + 1]}</span> ${h(STRENGTH[r.strength])} ${statusChip(r)}` : ''}
               ${!future && r.expression ? `· ${h(EXPRESSION[r.expression])}` : ''}
               ${r.origin === 'manual' ? '<small class="pe-tag">手动</small>' : ''}${r.viaEventId ? '<small class="pe-tag">因评论得知</small>' : ''}
-              ${r.opinion ? `<div class="pe-evi">私下看法：${h(r.opinion.summary || '')}${r.opinion.understanding && r.opinion.understanding !== 'full' ? `（${r.opinion.understanding === 'partial' ? '部分理解' : '有误读'}）` : ''}</div>` : ''}
+              ${r.opinion ? `<div class="pe-evi">私下看法：${h(r.opinion.summary || '')}${r.opinion.understanding && r.opinion.understanding !== 'full' ? `（${r.opinion.understanding === 'partial' ? '部分理解' : '有误读'}）` : ''} ${dimsHtml(r.opinion.dimensions)}
+                ${r.opinion.authorView ? `<div>对作者：${h(r.opinion.authorView)}</div>` : ''}${r.opinion.changeFromBefore ? `<div class="pe-muted">与以前相比：${h(r.opinion.changeFromBefore)}</div>` : ''}</div>` : ''}
               <details class="pe-why"><summary>为什么？</summary><ol>${(r.why || []).map(x => `<li>${h(x)}</li>`).join('')}</ol></details>
               ${!future && ['skimmed', 'finished'].includes(r.read) ? `<button class="pe-mini" data-act="gen-opinion" data-id="${r.id}">${r.opinion ? '重新生成看法' : '生成私下看法'}</button>` : ''}</li>`;
         }).join('');
-        return `<section><h4>《${h(w?.title || '?')}》 ${w ? penChip(st, w.pennameId) : ''}</h4>
+        return `<section><h4>${bt(w?.title || '?')} ${w ? penChip(st, w.pennameId) : ''}</h4>
           <p><small>截至今天：未接触 ${cnt('none')} · 接触未读 ${cnt('ignored')} · 读了一部分 ${cnt('skimmed')} · 读完 ${cnt('finished')}（尚未发生的阅读不显示）</small></p>
           <ul class="pe-list">${rows || '<li>暂无人读过。</li>'}</ul></section>`;
     }).join('');
@@ -550,12 +691,42 @@ function reading(st) {
     </section>`;
 }
 
-function listBlock(title, kind, list, spec, st, labelFn, styleFn = null, extra = '') {
+const TRUST = { 0.3: '低', 0.6: '中', 0.9: '高' };
+function relRow(st, self, r = {}) {
+    const opt = (o, v) => Object.entries(o).map(([k, l]) => `<option value="${h(k)}" ${String(k) === String(v) ? 'selected' : ''}>${h(l)}</option>`).join('');
+    const people = st.persons.filter(p => p.id !== self.id);
+    const tr = r.trust == null ? 0.6 : [0.3, 0.6, 0.9].reduce((a, b) => (Math.abs(b - r.trust) < Math.abs(a - r.trust) ? b : a));
+    return `<div class="pe-rel-row">
+      <select data-r="to" class="text_pole"><option value="">（选择人物）</option>${people.map(p => `<option value="${p.id}" ${p.id === r.to ? 'selected' : ''}>${h(p.name)}</option>`).join('')}</select>
+      <select data-r="type" class="text_pole">${opt(REL_TYPES, r.type || 'friend')}</select>
+      <select data-r="closeness" class="text_pole">${opt(CLOSE, r.closeness ?? 1)}</select>
+      <select data-r="frequency" class="text_pole">${opt(REL_FREQ, r.frequency || 'monthly')}</select>
+      <select data-r="trust" class="text_pole" title="对这个人的信任">${opt(TRUST, tr)}</select>
+      <label title="会不会跟他谈起读过的东西、自己的看法"><input type="checkbox" data-r="discloseOpinions" ${r.discloseOpinions === false ? '' : 'checked'}> 谈看法</label>
+      <label title="自己知道笔名背后是谁时，肯不肯告诉他"><input type="checkbox" data-r="discloseIdentity" ${r.discloseIdentity ? 'checked' : ''}> 可能说出作者身份</label>
+      <button class="menu_button pe-mini" data-act="rel-del" title="删除">✕</button></div>`;
+}
+function relationsEditor(obj, st) {
+    const incoming = st.persons.filter(p => p.id !== obj.id && (p.relations || []).some(r => r.to === obj.id));
+    return `<div class="pe-field pe-wide"><label>熟人关系 <small class="pe-muted">有方向：这里写的是“${h(obj.name || '此人')}对别人”。见面越勤、越亲近，读到的东西越可能谈起；同一刊物的同事不填也会按“每周见、一般熟”算</small></label>
+      <div class="pe-rel-list" data-self="${obj.id}">${(obj.relations || []).map(r => relRow(st, obj, r)).join('')}</div>
+      <div class="pe-row"><button class="menu_button" data-act="rel-add">＋ 添加关系</button>
+      ${incoming.length ? `<small class="pe-muted">反过来，把${h(obj.name || '此人')}列为熟人的有：${incoming.map(p => personTag(p)).join('、')}</small>` : ''}</div></div>`;
+}
+function readRelations(root) {
+    return [...root.querySelectorAll('.pe-rel-row')].map(row => {
+        const g = k => row.querySelector(`[data-r="${k}"]`);
+        return { to: g('to').value, type: g('type').value, closeness: +g('closeness').value, frequency: g('frequency').value, trust: +g('trust').value, discloseOpinions: g('discloseOpinions').checked, discloseIdentity: g('discloseIdentity').checked };
+    }).filter(r => r.to);
+}
+
+function listBlock(title, kind, list, spec, st, labelFn, styleFn = null, extra = '', actionsFn = null) {
     const isEdit = editing && editing.kind === kind;
     const isNew = isEdit && !list.some(x => x.id === editing.id);
     const editor = o => { const obj = kind === 'penname' && !o.color ? { ...o, color: penColor(st, o.id) || PEN_PALETTE[st.pennames.length % PEN_PALETTE.length] } : o; return `<div class="pe-editor" data-kind="${kind}">
           <div class="pe-editor-head">${isNew ? `新建${title}` : `编辑${title}：<b>${h(obj.title || obj.name || '')}</b>`}</div>
           ${formHtml(spec, obj, st)}
+          ${kind === 'person' ? relationsEditor(obj, st) : ''}
           <div class="pe-row"><button class="pe-primary" data-act="save-item" data-kind="${kind}">保存</button><button data-act="cancel-edit">取消</button>
           ${kind === 'work' && !isNew ? `<button data-act="reroll-work" data-id="${obj.id}" title="资料改动后，重新推演尚未批准的回应">按新资料重推</button><button data-act="gen-card" data-id="${obj.id}" title="先保存原文，再生成">生成证据卡</button>` : ''}</div>
           ${kind === 'work' && obj?.evidence ? `<details><summary>证据卡（${h(obj.evidence.builtAt?.slice(0, 10) || '')}，${(obj.evidence.keyPoints || []).length} 条${obj.evidence.stale ? '，原文已更新，建议重新生成' : ''}）</summary><div class="pe-text">${h(cardText(obj.evidence, 6000)).replace(/\n/g, '<br>')}</div></details>` : ''}</div>`; };
@@ -564,7 +735,7 @@ function listBlock(title, kind, list, spec, st, labelFn, styleFn = null, extra =
       <h4>${title} <span class="pe-count pe-count-dim">${list.length}</span><span class="pe-spacer"></span>${isNew ? '' : `<button data-act="new-item" data-kind="${kind}">＋ 新增${title}</button>`}</h4>
       ${extra}
       ${isNew ? editor(editing.draft) : ''}
-      ${list.map(x => (isEdit && editing.id === x.id) ? editor(x) : `<div class="pe-card pe-card-slim ${styleFn ? 'pe-colored' : ''}" ${styleFn ? `style="--c:${styleFn(x)}"` : ''}><div class="pe-card-main">${labelFn(x)}</div><div class="pe-card-actions pe-card-actions-row">
+      ${list.map(x => (isEdit && editing.id === x.id) ? editor(x) : `<div class="pe-card pe-card-slim ${styleFn ? 'pe-colored' : ''}" ${styleFn ? `style="--c:${styleFn(x)}"` : ''}><div class="pe-card-main">${labelFn(x)}</div><div class="pe-card-actions pe-card-actions-row">${actionsFn ? actionsFn(x) : ''}
         <button data-act="edit-item" data-kind="${kind}" data-id="${x.id}">编辑</button>
         <button data-act="del-item" data-kind="${kind}" data-id="${x.id}">删除</button></div></div>`).join('') || (isNew ? '' : '<div class="pe-empty-sm">还没有。</div>')}
     </section>`;
@@ -572,7 +743,7 @@ function listBlock(title, kind, list, spec, st, labelFn, styleFn = null, extra =
 
 function txtImportBlock(st) {
     const outOpts = r => `<option value="">（无刊物）</option>${st.outlets.map(o => `<option value="${h(o.id)}" ${o.id === r.outletId ? 'selected' : ''}>${h(o.name)}</option>`).join('')}${r.outletName && !r.outletId ? `<option value="new:${h(r.outletName)}" ${r.newOutlet ? 'selected' : ''}>新建刊物“${h(r.outletName)}”</option>` : ''}`;
-    const actOpts = r => `<option value="new" ${r.action === 'new' ? 'selected' : ''}>新建作品</option>${st.works.map(w => `<option value="update:${h(w.id)}" ${r.action === 'update' && r.workId === w.id ? 'selected' : ''}>更新《${h(w.title)}》</option>`).join('')}<option value="skip" ${r.action === 'skip' ? 'selected' : ''}>跳过</option>`;
+    const actOpts = r => `<option value="new" ${r.action === 'new' ? 'selected' : ''}>新建作品</option>${st.works.map(w => `<option value="update:${h(w.id)}" ${r.action === 'update' && r.workId === w.id ? 'selected' : ''}>更新${bt(w.title)}</option>`).join('')}<option value="skip" ${r.action === 'skip' ? 'selected' : ''}>跳过</option>`;
     const formOpts = r => Object.entries(FORMS).map(([k, v]) => `<option value="${k}" ${k === r.form ? 'selected' : ''}>${h(v)}</option>`).join('');
     return `
     <section class="pe-drop" id="pe-txt-drop">
@@ -600,7 +771,7 @@ function txtImportBlock(st) {
 
 function works(st) {
     return txtImportBlock(st)
-        + listBlock('作品', 'work', [...st.works].sort((a, b) => cmp(a.pubDate || '9', b.pubDate || '9')), WORK_SPEC, st, w => `${penChip(st, w.pennameId)} <b>《${h(w.title)}》</b> <small>${h(FORMS[w.form] || '')} · ${h(byId(st.outlets, w.outletId)?.name || '')} · ${h(w.pubDate || '未定日期')}${w.sourceText ? ` · 原文 ${w.sourceText.length} 字` : ''}${w.evidence ? ' · 有证据卡' : ''}</small>`, w => penColor(st, w.pennameId) || 'var(--pe-border)', st.pennames.length > 1 ? `<div class="pe-legend">${st.pennames.map(p => penChip(st, p.id)).join('')}</div>` : '')
+        + listBlock('作品', 'work', [...st.works].sort((a, b) => cmp(a.pubDate || '9', b.pubDate || '9')), WORK_SPEC, st, w => `${penChip(st, w.pennameId)} <b>${bt(w.title)}</b> <small>${h(FORMS[w.form] || '')} · ${h(byId(st.outlets, w.outletId)?.name || '')} · ${h(w.pubDate || '未定日期')}${w.sourceText ? ` · 原文 ${w.sourceText.length} 字` : ''}${w.evidence ? ' · 有证据卡' : ''}</small>`, w => penColor(st, w.pennameId) || 'var(--pe-border)', st.pennames.length > 1 ? `<div class="pe-legend">${st.pennames.map(p => penChip(st, p.id)).join('')}</div>` : '', w => `<button class="pe-primary" data-act="sim-work" data-id="${w.id}" title="谁可能读到、会怎么反应；也可以假设改投别的刊物">推演</button>`)
         + listBlock('笔名', 'penname', st.pennames, PEN_SPEC, st, p => `${penChip(st, p.id)} ${p.owner ? '<small>（' + h(p.owner) + '）</small>' : ''} ${p.publicIdentityKnown ? '<small class="pe-tag">身份已公开</small>' : ''}`, p => penColor(st, p.id));
 }
 
@@ -680,9 +851,20 @@ function findOutlet(st, name) {
     return st.outlets.find(o => o.name.replace(/\s/g, '') === n) || st.outlets.find(o => { const m = o.name.replace(/\s/g, ''); return m.includes(n) || n.includes(m); }) || null;
 }
 
+function conceptsBlock(st) {
+    const total = allTags(st).length;
+    const un = unclassified(st);
+    const groups = conceptGroups(st);
+    return `<details class="pe-fold" ${st.concepts && !un.length ? '' : 'open'}><summary>标签语义归类 <span class="pe-muted">${st.concepts ? `已归 ${groups.length} 组` : '未归类'}${un.length ? ` · ${un.length}/${total} 个标签还没归类` : ''}</span></summary>
+      <div class="pe-muted">人物的关注、欣赏、反感和作品题材往往不是同一个词（“家庭责任”“长子困境”“道德义务”）。归类一次，推演就能认出意思相近的标签，而不必手改成同一个词。只在这里调用模型，之后推演不再调用。没归类的标签按字面兜底：相同或互相包含算匹配，只共用词根的只算“有点兴趣”，不影响褒贬。</div>
+      <div class="pe-toolbar"><button class="pe-primary" data-act="concepts-build" ${un.length ? '' : 'disabled'}>${st.concepts ? `归类新增的 ${un.length} 个标签` : `用模型归类全部 ${total} 个标签`}</button>${st.concepts ? '<button data-act="concepts-rebuild">全部重新归类</button>' : ''}</div>
+      ${groups.length ? `<div class="pe-concepts">${groups.map(g => `<div><b>${h(g.name)}</b> <span class="pe-muted">${g.tags.map(h).join('、')}</span></div>`).join('')}</div>` : ''}
+    </details>`;
+}
+
 function people(st) {
-    return listBlock('刊物', 'outlet', st.outlets, OUTLET_SPEC, st, o => `<b>${h(o.name)}</b> <small>${h(PERIODICITY[o.periodicity] || '')}${o.periodicity === 'weekly' && Number.isInteger(o.weekday) ? '·' + WEEKDAYS[o.weekday] : ''} · ${h(CIRCLES[o.circle] || '')} · ${h(tagsToText(o.politics))}</small>`)
-        + listBlock('人物', 'person', [...st.persons].sort((a, b) => closeOf(b) - closeOf(a)), PERSON_SPEC, st, p => `${personTag(p)} <span class="pe-chip pe-close-chip" style="--c:${CLOSE_COLOR[closeOf(p)]}">${CLOSE[closeOf(p)]}</span> <small>${(p.roles || []).map(r => ROLES[r]).join('/')} · ${(p.outletIds || []).map(id => byId(st.outlets, id)?.name).filter(Boolean).join('、') || '无供稿刊物'} ${p.knowsIdentity ? ' · 知道笔名身份' : ''}${p.real ? ' · 真实人物' : ''}${p.active === false ? ' · 不参与推演' : ''}</small>`, p => CLOSE_COLOR[closeOf(p)], `<div class="pe-muted">颜色表示与主角的私交，按私交从深到浅排列：</div>${closeLegend()}`);
+    return conceptsBlock(st) + listBlock('刊物', 'outlet', st.outlets, OUTLET_SPEC, st, o => `<b>${h(o.name)}</b> <small>${h(PERIODICITY[o.periodicity] || '')}${o.periodicity === 'weekly' && Number.isInteger(o.weekday) ? '·' + WEEKDAYS[o.weekday] : ''} · ${h(CIRCLES[o.circle] || '')} · ${h(tagsToText(o.politics))}</small>`)
+        + listBlock('人物', 'person', [...st.persons].sort((a, b) => closeOf(b) - closeOf(a)), PERSON_SPEC, st, p => `${personTag(p)} <span class="pe-chip pe-close-chip" style="--c:${CLOSE_COLOR[closeOf(p)]}">${CLOSE[closeOf(p)]}</span> <small>${(p.roles || []).map(r => ROLES[r]).join('/')} · ${(p.outletIds || []).map(id => byId(st.outlets, id)?.name).filter(Boolean).join('、') || '无供稿刊物'} ${(p.relations || []).length ? ` · 熟人 ${(p.relations || []).length}` : ''}${p.knowsIdentity ? ' · 知道笔名身份' : ''}${p.real ? ' · 真实人物' : ''}${p.active === false ? ' · 不参与推演' : ''}</small>`, p => CLOSE_COLOR[closeOf(p)], `<div class="pe-muted">颜色表示与主角的私交，按私交从深到浅排列：</div>${closeLegend()}`, p => `<button class="pe-primary" data-act="sim-person" data-id="${p.id}" title="此人和作者作品的关系；假如他读到某部作品会怎样">推演</button>`);
 }
 
 // ———— 年代档案的排版：把模型返回的长串拆成卡片、标签和列表 ————
@@ -962,7 +1144,7 @@ function importTab(st) {
         <small>书信簿剧情日期：${h(epistolaryStoryDate() || '未设定')}</small></div>
         <p><small>只扫描日期不晚于当前故事日期（${h(st.currentDate || '未设定')}）的信。日期取写信日期，没有就取书信簿事件里的寄出日期；主角寄出的信按对方读到的日期算。</small></p>
         <ul class="pe-list">${hints.map(x => `<li><b>${h(x.date || '日期不详')}</b> ${h(x.code)} ${h(x.author)} → ${h((x.recipients || []).join('、') || '—')} <small class="pe-tag">${dirName[x.direction] || ''}</small>
-          · ${x.workTitle ? '《' + h(x.workTitle) + '》' : '笔名 ' + h(x.penname)}
+          · ${x.workTitle ? bt(x.workTitle) : '笔名 ' + h(x.penname)}
           <div class="pe-evi">${h(x.excerpt)}</div><small>${h(x.suggestion)}${x.personId || !x.personName ? '' : '（此人还不在人物列表里）'}</small>
           <div class="pe-row">
             ${x.workId && x.personId && /^\d{4}-\d{2}-\d{2}$/.test(x.date) ? `<button class="pe-mini" data-act="epi-hint-read" data-id="${h(x.id)}">${x.direction === 'from_user' ? '记为对方经书信得知并读过' : '记为此人已读过'}</button>` : ''}
@@ -1090,7 +1272,7 @@ async function onClick(e) {
     if (btn?.tagName === 'SUMMARY') return;
     if (!btn) return;
     const go = btn.dataset.tab || btn.dataset.tabGo;
-    if (go) { tab = go; editing = null; refresh(); const b = document.getElementById('pe-body'); if (b) b.scrollTop = 0; return; }
+    if (go) { tab = go; editing = null; simView = null; refresh(); const b = document.getElementById('pe-body'); if (b) b.scrollTop = 0; return; }
     const act = btn.dataset.act;
     if (!act) return;
     const st = getState();
@@ -1161,8 +1343,75 @@ async function onClick(e) {
                 commitTxt(st);
             }
             logLine(st, `应用整理包：${kinds.map(k => KIND_LABEL[k]).join('、')}；自动新建 ${rep.created.length}，跳过 ${rep.skipped.length}`);
+            if (!st.backfilledAt) toast('info', '整理结果已导入。建议先到“人物与刊物”归类标签，再到“概览”点“回溯推演”，补上从首次发表到现在的文学界变化。');
             commit(`已应用整理结果${rep.created.length ? `；自动新建 ${rep.created.length} 项资料空白的条目，请到“人物与刊物”补全` : ''}${rep.skipped.length ? `；跳过 ${rep.skipped.length} 条` : ''}`);
             if (rep.skipped.length || rep.created.length) showText('应用报告', [...rep.lines, '', '自动新建：', ...rep.created, '', '跳过：', ...rep.skipped].join('\n'));
+            break;
+        }
+
+        // 预演
+        case 'sim-work': simView = { kind: 'work', workId: btn.dataset.id, runs: 40 }; simView.result = simulate(st, s, getEra(), { workId: simView.workId, runs: 40 }); refresh(); $('#pe-body').scrollTop = 0; break;
+        case 'sim-work-run': {
+            const outletId = $('#pe-sim-outlet').value;
+            const pubDate = normalizeISO($('#pe-sim-date').value);
+            if (!pubDate) return toast('warning', '日期格式应为 YYYY-MM-DD');
+            const runs = +$('#pe-sim-runs').value || 40;
+            const until = normalizeISO($('#pe-sim-until').value) || null;
+            setBusy('推演中');
+            try { Object.assign(simView, { outletId, pubDate, runs, until, result: simulate(st, s, getEra(), { workId: simView.workId, outletId, pubDate, runs, until }) }); } finally { setBusy(''); }
+            refresh(); break;
+        }
+        case 'sim-person': simView = { kind: 'person', personId: btn.dataset.id, runs: 40 }; refresh(); $('#pe-body').scrollTop = 0; break;
+        case 'sim-person-pick': simView.whatIf = { workId: btn.dataset.id, date: $('#pe-sim-pdate')?.value || st.currentDate }; simView.result = null; refresh(); document.getElementById('pe-sim-pwork')?.scrollIntoView?.({ block: 'center' }); break;
+        case 'sim-person-odds': {
+            setBusy('估算中');
+            try {
+                simView.odds = {};
+                for (const w of st.works.filter(x => x.pubDate)) {
+                    const r = simulate(st, s, getEra(), { workId: w.id, personId: simView.personId, runs: 30 }).rows[0];
+                    if (r) simView.odds[w.id] = r;
+                }
+            } finally { setBusy(''); }
+            refresh(); break;
+        }
+        case 'sim-person-run': {
+            const date = normalizeISO($('#pe-sim-pdate').value);
+            const workId = $('#pe-sim-pwork').value;
+            if (!date) return toast('warning', '日期格式应为 YYYY-MM-DD');
+            const runs = +$('#pe-sim-runs').value || 40;
+            simView.whatIf = { workId, date };
+            simView.runs = runs;
+            setBusy('推演中');
+            try { simView.result = simulate(st, s, getEra(), { workId, personId: simView.personId, readDate: date, runs }); } finally { setBusy(''); }
+            refresh(); break;
+        }
+        case 'sim-person-commit': {
+            const wi = simView.whatIf;
+            const rec = recordManualReading(st, s, getEra(), { workId: wi.workId, personId: simView.personId, date: wi.date, read: 'finished', note: '在预演中确认' });
+            simView.result = null;
+            commit(`已记下；按规则推演出 ${rec.eventIds.length} 条后续${rec.seek ? `，他约 ${rec.seek} 起会去找作者的其他作品` : ''}`);
+            break;
+        }
+        case 'sim-close': simView = null; refresh(); break;
+        case 'concepts-build':
+        case 'concepts-rebuild': {
+            setBusy('归类标签');
+            try { await buildConcepts(st, s, { full: act === 'concepts-rebuild', onProgress: setBusy }); } finally { setBusy(''); }
+            logLine(st, `标签归类：${st.concepts.groups.length} 组`);
+            commit(`已归类：${st.concepts.groups.length} 个概念组。之前推演出、尚未入账的内容不会自动改变；需要的话在概览里重新“回溯推演”。`);
+            break;
+        }
+        case 'backfill': {
+            const mode = btn.dataset.mode || 'hidden';
+            if (!confirm(mode === 'hidden'
+                ? '从首次发表起回溯推演到当前日期：已导入的记录视为当时的全部公开报道和来信，只补阅读、私下看法和之后的后续反响。之前推演出但未入账的内容会重新生成。继续？'
+                : '从首次发表起回溯推演到当前日期，公开报道和私信也补，全部进入待审核。之前推演出但未入账的内容会重新生成。继续？')) break;
+            setBusy('回溯推演');
+            let r;
+            try { r = backfill(st, s, getEra(), { mode }); } finally { setBusy(''); }
+            st.backfilledAt = { at: new Date().toISOString(), mode, to: r.to };
+            logLine(st, `回溯推演（${mode === 'hidden' ? '只补看不见的部分' : '全部'}）${r.from} → ${r.to}：读完 ${r.finished}、读了部分 ${r.skimmed}、接触未读 ${r.ignored}；回溯候选 ${r.candidates}，之后的排期 ${r.scheduled}`);
+            commit(`回溯完成：${r.finished + r.skimmed} 人次读过作品，${r.remarks} 人次私下谈起${r.candidates ? `，${r.candidates} 条回溯反响待审核` : ''}${r.scheduled ? `，${r.scheduled} 条在 ${r.to} 之后陆续出现` : ''}`);
             break;
         }
         case 'txt-commit': commitTxt(st); break;
@@ -1299,6 +1548,26 @@ async function onClick(e) {
         }
         case 'edit-item': editing = { kind: btn.dataset.kind, id: btn.dataset.id }; refresh(); document.querySelector('#pe-body .pe-editor')?.scrollIntoView?.({ block: 'start', behavior: 'smooth' }); break;
         case 'cancel-edit': editing = null; refresh(); break;
+        case 'rel-add': {
+            const list = document.querySelector('.pe-editor .pe-rel-list');
+            const self = st.persons.find(p => p.id === list?.dataset.self) || editing?.draft || {};
+            list?.insertAdjacentHTML('beforeend', relRow(st, self, {}));
+            break;
+        }
+        case 'rel-del': btn.closest('.pe-rel-row')?.remove(); break;
+        case 'leak-yes':
+        case 'leak-no': {
+            const lk = (st.identityLeaks || []).find(x => x.id === btn.dataset.id);
+            if (!lk) break;
+            lk.status = act === 'leak-yes' ? 'confirmed' : 'denied';
+            if (act === 'leak-yes') {
+                const pen = byId(st.pennames, lk.pennameId); const q = byId(st.persons, lk.to);
+                if (pen && q) { pen.knownBy = [...new Set([...(pen.knownBy || []), q.id])]; q.knowsIdentity = true; }
+                logLine(st, `确认：${byId(st.persons, lk.to)?.name} 从 ${byId(st.persons, lk.from)?.name} 处得知“${byId(st.pennames, lk.pennameId)?.name}”的身份`);
+            }
+            commit(act === 'leak-yes' ? '已记为知情' : '已否认');
+            break;
+        }
         case 'save-item': {
             const kind = btn.dataset.kind;
             const spec = { penname: PEN_SPEC, outlet: OUTLET_SPEC, person: PERSON_SPEC, work: WORK_SPEC }[kind];
@@ -1310,6 +1579,7 @@ async function onClick(e) {
             let obj = st[listName].find(x => x.id === editing.id);
             if (!obj) { obj = editing.draft; st[listName].push(obj); }
             Object.assign(obj, vals);
+            if (kind === 'person') obj.relations = readRelations(root);
             if (kind === 'outlet' && obj.weekday === '') obj.weekday = null;
             editing = null;
             commit('已保存');

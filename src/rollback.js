@@ -22,6 +22,10 @@ export function takeSnapshot(state, mesId, toDate = null) {
         weekdayWarning: state.weekdayWarning || null,
         rolls: JSON.parse(JSON.stringify(state.rolls || {})),
         rumors: JSON.parse(JSON.stringify(state.rumors || [])),
+        followers: JSON.parse(JSON.stringify(state.followers || {})),
+        impressions: JSON.parse(JSON.stringify(state.impressions || {})),
+        recommends: JSON.parse(JSON.stringify(state.recommends || {})),
+        identityLeaks: JSON.parse(JSON.stringify(state.identityLeaks || [])),
         eventIds: (state.ledger || []).map(e => e.id),
         eventStatus: Object.fromEntries((state.ledger || []).filter(e => e.origin === 'engine').map(e => [e.id, e.status])),
         receptionIds: (state.receptions || []).map(r => r.id),
@@ -41,6 +45,10 @@ export function rollbackFrom(state, mesId) {
     state.weekdayWarning = snap.weekdayWarning;
     state.rolls = snap.rolls;
     state.rumors = snap.rumors;
+    state.followers = snap.followers || {};
+    state.impressions = snap.impressions || {};
+    state.recommends = snap.recommends || {};
+    state.identityLeaks = snap.identityLeaks || [];
     // 被撤掉的事件里，你亲手作过的决定（批准/驳回/改稿）按事件键记下来；
     // 之后推演再次生成同一条（同键同日）时自动套回去，免得改一个错字就丢掉审核结果
     state.decisionMemo = state.decisionMemo || {};

@@ -186,6 +186,7 @@ export async function buildEraProfile({ year, currentIso, placeLabel, sources, n
     const system = `你是严谨的历史编辑，熟悉${placeLabel || '该地'}的报刊史、文学史和社会史。你要为一个以 ${currentIso || year} 为“当前日期”的历史故事编写时代档案。
 硬性要求：
 1. 只能写截至 ${currentIso || year} 已经存在或已经发生的事物；此日期之后的事件、出版物、人物去世等一律不得出现，也不得暗示。
+1b. 资料可能出自后世（传记、研究、维基条目）：其中的后世评价、后来才公开的事实、人物以后的成就，都不能写成当时已为人知的事。只写当时的人能知道的。
 2. 报刊、评论家必须是该时该地真实存在且正在活动的；拿不准的放进 "uncertain"，不要编造。
 3. 优先依据下面提供的资料；资料没有覆盖的，用你的历史知识补充，但要更保守。
 4. 描述用${settings.outputLanguage || '中文'}，专名保留原文并附译名。

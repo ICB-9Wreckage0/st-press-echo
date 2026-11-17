@@ -21,10 +21,10 @@ export function blankOutlet() {
     return { id: uid('out'), name: '', periodicity: 'daily', weekday: null, monthDays: [], politics: [], circle: 'general', tier: 3, sections: [], capacity: null, deadlineDays: null, real: true, note: '' };
 }
 export function blankPerson() {
-    return { id: uid('per'), name: '', roles: ['critic'], outletIds: [], interests: [], likes: [], dislikes: [], closeness: 0, monthlyCapacity: 2, columnWeekday: null, reads: [], busy: '', knowsIdentity: false, real: true, active: true, notes: '' };
+    return { id: uid('per'), name: '', roles: ['critic'], outletIds: [], interests: [], likes: [], dislikes: [], closeness: 0, monthlyCapacity: 2, columnWeekday: null, reads: [], busy: '', relations: [], knowsIdentity: false, real: true, active: true, notes: '' };
 }
 export function blankWork() {
-    return { id: uid('wrk'), title: '', pennameId: '', form: 'serial', outletId: '', pubDate: '', endDate: '', themes: [], aliases: [], summary: '', parentId: '', sourceText: '', sourceFrom: [], evidence: null };
+    return { id: uid('wrk'), title: '', pennameId: '', form: 'serial', outletId: '', pubDate: '', endDate: '', themes: [], aliases: [], series: '', summary: '', parentId: '', sourceText: '', sourceFrom: [], evidence: null };
 }
 
 function ensurePenname(state, name) {

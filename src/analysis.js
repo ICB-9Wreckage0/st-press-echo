@@ -60,23 +60,39 @@ export function cardText(card, max = 3500) {
     return truncate(L.join('\n'), max);
 }
 
-function historyOf(state, personId, exceptId) {
+const DIM = { technique: '技巧', ideas: '思想', argument: '论证', emotion: '情感', attention: '关注' };
+export const OPINION_DIMS = DIM;
+function dimText(d) {
+    if (!d) return '';
+    return Object.entries(DIM).filter(([k]) => d[k] != null && d[k] !== '').map(([k, v]) => `${v}${d[k] > 0 ? '+' : ''}${d[k]}`).join(' ');
+}
+function historyOf(state, personId, exceptId, pennameId) {
     return (state.receptions || [])
-        .filter(r => r.personId === personId && r.id !== exceptId && r.opinion?.summary)
+        .filter(r => r.personId === personId && r.id !== exceptId && r.opinion?.summary && (!pennameId || byId(state.works, r.workId)?.pennameId === pennameId))
+        .sort((a, b) => String(a.readDate || '').localeCompare(String(b.readDate || '')))
         .map(r => {
             const w = byId(state.works, r.workId);
-            return `- 《${w?.title || '?'}》（${r.readDate || ''}）：${r.opinion.summary}`;
-        }).slice(-6);
+            const d = dimText(r.opinion.dimensions);
+            return `- 《${w?.title || '?'}》（${r.readDate || ''}）：${r.opinion.summary}${d ? `〔${d}〕` : ''}${r.opinion.authorView ? `；当时对作者的看法：${r.opinion.authorView}` : ''}`;
+        }).slice(-8);
 }
 
 const OPINION_SCHEMA = `{
   "understanding": "full | partial | misread",
   "misreading": "若 partial 或 misread：具体哪里没读懂或读错了（否则空）",
+  "dimensions": {
+    "technique": "文学技巧（文笔、结构、叙事）：-2 很差 … 0 一般 … 2 出色；不在意此项填 null",
+    "ideas": "思想内容是否认同：-2 … 2 或 null",
+    "argument": "论证、材料是否可信：-2 … 2 或 null",
+    "emotion": "情感上是否打动他：-2 … 2 或 null",
+    "attention": "是否值得继续关注：-2 … 2 或 null"
+  },
   "appreciates": [{"point": "欣赏什么", "evidence": "引用证据卡编号，如 K3"}],
   "objections": [{"point": "反对或质疑什么", "evidence": "引用证据卡编号"}],
   "indifferent": false,
   "worthWriting": false,
-  "changeFromBefore": "与此人以前对该作者作品的看法相比有无变化、为什么（无则空）",
+  "authorView": "读完这部之后，他心中这位作者是什么样的：擅长什么、毛病在哪（40字内；可以和以前一样，也可以修正）",
+  "changeFromBefore": "与他以前对该作者作品的看法相比有无变化；有变化必须指出改变了以前哪一条看法、因为这部作品的哪一点（无则空）",
   "summary": "不超过80字：此人私下对这部作品的总体看法"
 }`;
 
@@ -86,7 +102,7 @@ export async function generateOpinion(state, rec, era, settings) {
     if (!work || !person) throw new Error('找不到作品或人物');
     if (!['skimmed', 'finished'].includes(rec.read)) throw new Error('此人没有读这部作品，不会有看法');
     const card = work.evidence;
-    const hist = historyOf(state, person.id, rec.id);
+    const hist = historyOf(state, person.id, rec.id, work.pennameId);
     const system = `你在模拟一位历史人物私下读完一部作品后的真实看法。时间：${rec.readDate}。
 时代约束：
 ${eraBrief(era, 600)}
@@ -96,19 +112,27 @@ ${eraBrief(era, 600)}
 3. 允许平淡的结果：觉得还行但没什么可说；只读懂一部分；认同论证却反对结论；认为不值得专门写文章。不要为了有趣而制造争议，也不要让人物显得格外深刻。
 4. ${rec.read === 'skimmed' ? '此人只读了一部分：只能评论他读到的部分，可以有误解。' : ''}
 5. 这是私下看法，不是公开文章。
+5b. 各个维度独立判断，不必一致：完全可以“文笔出色、论证粗糙、结论不认同，但觉得作者值得关注”。
+5c. 如果他以前读过这位作者的作品，必须对照下面列出的旧看法：保留仍然成立的判断（包括矛盾的判断），只在这部作品确实提供了理由时才修正，并在 changeFromBefore 里写明修正了哪一条。不要编造“作者越来越成熟”之类没有依据的成长线，也不要让他变得无条件欣赏作者。
 6. 只输出 JSON：
 ${OPINION_SCHEMA}`;
     const user = `【人物】${person.name}${person.real ? '（真实历史人物）' : ''}
 身份：${(person.roles || []).join('、')}；关注：${(person.interests || []).join('、')}
 欣赏：${(person.likes || []).join('、') || '—'}；反感：${(person.dislikes || []).join('、') || '—'}
 备注：${person.notes || '—'}
-${hist.length ? '此人以前读该作者作品时的看法：\n' + hist.join('\n') : '此人以前没有读过该作者的作品（或没有记录）。'}
+${hist.length ? '此人以前读这个署名的作品时的看法（按时间先后）：\n' + hist.join('\n') : '此人以前没有读过这个署名的作品（或没有生成过看法）。'}
 
 【作品】《${work.title}》；题材：${workTags(state, work).join('、')}
 ${card ? '证据卡：\n' + cardText(card) : `（尚无证据卡，只有摘要：${work.summary || '无'}。请保守，不要编造细节；evidence 字段写“摘要”）`}`;
     const raw = await callLLM({ system, user, settings, maxTokens: 1500 });
     const op = extractJSON(raw);
     if (!op || typeof op !== 'object' || !op.summary) throw new Error('模型没有按格式返回看法，请重试');
+    if (op.dimensions && typeof op.dimensions === 'object') {
+        for (const k of Object.keys(op.dimensions)) {
+            const v = Number(op.dimensions[k]);
+            op.dimensions[k] = op.dimensions[k] == null || op.dimensions[k] === '' || isNaN(v) ? null : Math.max(-2, Math.min(2, Math.round(v)));
+        }
+    }
     op.generatedAt = new Date().toISOString();
     op.withCard = !!card;
     rec.opinion = op;
