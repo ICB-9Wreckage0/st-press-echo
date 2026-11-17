@@ -83,6 +83,8 @@ function knownNames(state) {
 
 const arr = v => (Array.isArray(v) ? v : v == null || v === '' ? [] : typeof v === 'string' ? v.split(/[，,、;；]\s*/).filter(Boolean) : [v]);
 const str = v => (v == null ? '' : String(v).trim());
+/** 书名、刊名去掉外层书名号：“《巴黎回声报》”→“巴黎回声报”；“《生者与死亡》第一册”保持原样 */
+const bare = v => { const s = str(v); const m = s.match(/^《([^《》]+)》$/); return m ? m[1].trim() : s; };
 const num = (v, d = null) => (v === '' || v == null || isNaN(Number(v)) ? d : Number(v));
 
 /** 把中文标签或英文键都映射成键 */
@@ -116,8 +118,8 @@ export function normalizeBundle(obj) {
         pennames: arr(b.pennames).map(p => (typeof p === 'string' ? { name: p } : p)).filter(p => str(p.name)).map(p => ({
             name: str(p.name), owner: str(p.owner), publicIdentityKnown: !!p.publicIdentityKnown, knownBy: arr(p.knownBy).map(str),
         })),
-        outlets: arr(b.outlets).map(o => (typeof o === 'string' ? { name: o } : o)).filter(o => str(o.name)).map(o => ({
-            name: str(o.name), originalName: str(o.originalName),
+        outlets: arr(b.outlets).map(o => (typeof o === 'string' ? { name: o } : o)).filter(o => bare(o.name)).map(o => ({
+            name: bare(o.name), originalName: str(o.originalName),
             periodicity: enumKey(PERIODICITY, o.periodicity || o.type, ''),
             weekday: weekdayOf(o.weekday),
             monthDays: arr(o.monthDays).map(Number).filter(n => n >= 1 && n <= 31),
@@ -127,7 +129,7 @@ export function normalizeBundle(obj) {
         persons: arr(b.persons).map(p => (typeof p === 'string' ? { name: p } : p)).filter(p => str(p.name)).map(p => ({
             name: str(p.name), aliases: arr(p.aliases).map(str),
             roles: arr(p.roles).map(r => enumKey(ROLES, r, '')).filter(Boolean),
-            outlets: arr(p.outlets || p.outletNames).map(str), reads: arr(p.reads).map(str),
+            outlets: arr(p.outlets || p.outletNames).map(bare).filter(Boolean), reads: arr(p.reads).map(bare).filter(Boolean),
             interests: arr(p.interests).map(str), likes: arr(p.likes).map(str), dislikes: arr(p.dislikes).map(str),
             closeness: p.closeness == null ? null : Math.max(0, Math.min(3, num(p.closeness, 0))),
             knowsIdentity: p.knowsIdentity == null ? null : !!p.knowsIdentity,
@@ -136,9 +138,9 @@ export function normalizeBundle(obj) {
             rolesGiven: p.roles !== undefined,
         })),
         works: arr(b.works).map(w => (typeof w === 'string' ? { title: w } : w)).filter(w => str(w.title || w.name)).map(w => ({
-            title: str(w.title || w.name), aliases: arr(w.aliases).map(str), penname: str(w.penname),
-            form: enumKey(FORMS, w.form, ''), outlet: str(w.outlet || w.outletName),
-            pubDate: date(w.pubDate), endDate: date(w.endDate), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: str(w.versionOf),
+            title: bare(w.title || w.name), aliases: arr(w.aliases).map(bare).filter(a => a && a !== bare(w.title || w.name)), penname: str(w.penname),
+            form: enumKey(FORMS, w.form, ''), outlet: bare(w.outlet || w.outletName),
+            pubDate: date(w.pubDate), endDate: date(w.endDate), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: bare(w.versionOf),
         })),
         reactions: [], readings: [],
         rumors: arr(b.rumors).map(r => (typeof r === 'string' ? { text: r } : r)).filter(r => str(r.text)).map(r => ({ text: str(r.text), strength: Math.max(0, Math.min(1, num(r.strength, 0.5))) })),
@@ -149,7 +151,7 @@ export function normalizeBundle(obj) {
         const d = date(r.date);
         if (!d) { warn.push(`反响缺少有效日期，已跳过：${str(r.summary || r.person).slice(0, 30)}`); continue; }
         out.reactions.push({
-            date: d, layer: enumKey(LAYERS, r.layer, 'notice'), person: str(r.person), outlet: str(r.outlet || r.outletName), work: str(r.work),
+            date: d, layer: enumKey(LAYERS, r.layer, 'notice'), person: str(r.person), outlet: bare(r.outlet || r.outletName), work: bare(r.work),
             polarity: [1, 0, -1].includes(num(r.polarity)) ? num(r.polarity) : 0, count: num(r.count),
             title: str(r.title), summary: str(r.summary), evidence: str(r.evidence),
         });
@@ -157,7 +159,7 @@ export function normalizeBundle(obj) {
     for (const r of arr(b.readings)) {
         const d = date(r.date);
         if (!d || !str(r.person) || !str(r.work)) { warn.push(`阅读记录缺日期/人物/作品，已跳过：${str(r.person)} ${str(r.work)}`); continue; }
-        out.readings.push({ date: d, person: str(r.person), work: str(r.work), read: r.read === 'skimmed' ? 'skimmed' : 'finished', note: str(r.note) });
+        out.readings.push({ date: d, person: str(r.person), work: bare(r.work), read: r.read === 'skimmed' ? 'skimmed' : 'finished', note: str(r.note) });
     }
     return out;
 }
@@ -165,7 +167,7 @@ export function normalizeBundle(obj) {
 // ———————————— 合并多份整理包（分块抽取或分几次输出） ————————————
 
 const keyOf = { pennames: x => x.name, outlets: x => x.name, persons: x => x.name, works: x => x.title, rumors: x => x.text, eraNotes: x => x.title + x.text,
-    reactions: x => `${x.date}|${x.layer}|${x.person}|${x.work}|${x.outlet}`, readings: x => `${x.person}|${x.work}` };
+    reactions: x => `${x.date}|${x.layer}|${x.person}|${x.work}|${x.outlet}|${x.title}|${x.polarity}`, readings: x => `${x.person}|${x.work}` };
 const sameName = (a, b) => { const n = s => String(s || '').replace(/[\s·・.《》]/g, '').toLowerCase(); return n(a) && n(a) === n(b); };
 
 export function mergeBundles(a, b) {
@@ -212,8 +214,10 @@ export function previewBundle(state, b) {
     tally('outlets', b.outlets, x => findByName(state.outlets, x.name) || (x.originalName && findByName(state.outlets, x.originalName)), x => x.name);
     tally('persons', b.persons, x => findPerson(state, x.name), x => x.name);
     tally('works', b.works, x => findWork(state, x.title), x => `《${x.title}》${x.pubDate ? ' ' + x.pubDate : ''}`);
-    const dup = r => state.ledger.some(e => e.origin === 'manual' && e.date === r.date && e.layer === r.layer
-        && sameName(findPerson(state, r.person)?.name || e.personName || '', r.person) && sameName(findWork(state, r.work)?.title || '', r.work));
+    const dup = r => state.ledger.some(e => e.origin === 'manual' && e.date === r.date && e.layer === r.layer && (e.text?.title || '') === r.title && e.polarity === r.polarity
+        && (state.persons.find(p => p.id === e.personId)?.name || e.personName || '') === (findPerson(state, r.person)?.name || r.person || '')
+        && (state.works.find(w => w.id === e.workId)?.title || '') === (findWork(state, r.work)?.title || '')
+        && (state.outlets.find(o => o.id === e.outletId)?.name || '') === (findByName(state.outlets, r.outlet)?.name || ''));
     pv.items.reactions = b.reactions.map(r => ({ name: `${r.date} ${LAYERS[r.layer]?.label || r.layer} ${r.person || r.outlet || ''}${r.work ? ' 评《' + r.work + '》' : ''}`, exists: dup(r) }));
     pv.counts.reactions = { new: pv.items.reactions.filter(x => !x.exists).length, update: pv.items.reactions.filter(x => x.exists).length };
     pv.items.readings = b.readings.map(r => ({ name: `${r.date} ${r.person} 读《${r.work}》`, exists: false }));
@@ -317,12 +321,15 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
     if (on('reactions')) for (const r of b.reactions) {
         const person = r.person ? (findPerson(state, r.person) || (['reader_letters', 'mentions'].includes(r.layer) ? null : ensurePerson(state, r.person, report))) : null;
         const work = r.work ? findWork(state, r.work) : null;
-        const dup = state.ledger.some(e => e.origin === 'manual' && e.date === r.date && e.layer === r.layer && (e.personId || null) === (person?.id || null) && (e.workId || null) === (work?.id || null));
+        const outletId = ensureOutlet(state, r.outlet, report) || null;
+        // 同日同类、同人同作品，还要同刊物、同标题、同褒贬才算重复（同一天多家报纸的书评要分别记）
+        const dup = state.ledger.some(e => e.origin === 'manual' && e.date === r.date && e.layer === r.layer && (e.personId || null) === (person?.id || null)
+            && (e.workId || null) === (work?.id || null) && (e.outletId || null) === outletId && (e.text?.title || '') === r.title && e.polarity === r.polarity);
         if (dup) { report.skipped.push(`已存在：${r.date} ${r.person}`); continue; }
         const ev = {
             id: uid('ev'), key: null, origin: 'manual', date: r.date, layer: r.layer,
             personId: person?.id || null, personName: person ? undefined : (r.person || undefined),
-            outletId: ensureOutlet(state, r.outlet, report) || null,
+            outletId,
             workId: work?.id || null, pennameId: work?.pennameId || null,
             polarity: r.polarity, count: r.count ?? undefined, status: 'candidate',
             text: r.summary || r.title ? { title: r.title, summary: r.summary, body: '', byline: '', section: '' } : null,

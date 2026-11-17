@@ -487,3 +487,24 @@ span.pe-pol:not(.pe-chip) { font-size: .9em; padding: 0 4px; border: 1px solid; 
 .pe-txt-skip { opacity: .5; }
 .pe-check-inline { display: inline-flex; gap: 6px; align-items: center; font-size: .9em; opacity: .85; }
 @media (max-width: 760px) { .pe-txt-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* ---------- 颜色区分：笔名、私交 ---------- */
+.pe-pen { border-color: var(--c); color: var(--c); font-weight: bold; }
+.pe-colored { border-left-color: var(--c) !important; }
+.pe-person { color: var(--c); font-weight: bold; }
+.pe-person.pe-close0 { color: inherit; font-weight: bold; }
+.pe-person:not(.pe-close0)::before {
+    content: '';
+    display: inline-block;
+    width: .55em; height: .55em;
+    border-radius: 50%;
+    background: var(--c);
+    margin-right: .3em;
+    vertical-align: .1em;
+}
+.pe-close-chip { border-color: var(--c); color: var(--c); }
+.pe-legend { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 4px 0 10px; font-size: .9em; }
+.pe-legend .pe-person.pe-close0::before { content: ''; display: inline-block; width: .55em; height: .55em; border-radius: 50%; background: var(--c); margin-right: .3em; }
+.pe-editor-head { font-size: 1.02em; margin-bottom: 6px; color: var(--pe-accent); }
+.pe-editor-head b { color: inherit; }
+.pe-body h4 > .menu_button { font-weight: normal; font-size: .9rem; }

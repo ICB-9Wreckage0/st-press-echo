@@ -65,7 +65,14 @@ export function extractJSON(text) {
         return JSON.parse(body);
     } catch (e) {
         // 常见问题：尾逗号
-        const fixed = body.replace(/,\s*([}\]])/g, '$1');
+        let fixed = body.replace(/,\s*([}\]])/g, '$1');
+        try { return JSON.parse(fixed); } catch { /* 继续修 */ }
+        // 从网页复制时常见：Markdown 把 _ * [ ] 转义成 \_ 等；Python 风格的 None/True/False；中文引号当结构引号
+        fixed = fixed
+            .replace(/\\([_*\[\]#~`>|-])/g, '$1')
+            .replace(/([:\[,]\s*)None(?=\s*[,}\]])/g, '$1null')
+            .replace(/([:\[,]\s*)True(?=\s*[,}\]])/g, '$1true')
+            .replace(/([:\[,]\s*)False(?=\s*[,}\]])/g, '$1false');
         return JSON.parse(fixed);
     }
 }
