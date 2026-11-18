@@ -136,7 +136,7 @@ const sr = fresh();
 advanceTo(sr, '1890-05-20', S, null);
 const before = JSON.stringify({ d: sr.currentDate, n: sr.ledger.length, r: sr.receptions.length });
 takeSnapshot(sr, 10, '1890-06-30');
-const snapIds = new Set(sr.snapshots[0].eventIds);
+const snapIds = new Set(sr.ledger.map(e => e.id));
 advanceTo(sr, '1890-06-30', S, null);
 const target = sr.ledger.find(e => e.status === 'candidate' && !snapIds.has(e.id) && e.key);
 assert(target, '应有快照之后新生成的候选');
@@ -333,7 +333,7 @@ console.log('以新版为准替换标签和关系 ✓');
   { keyPoints: [{ id: 'K1' }, { id: 'K2' }] });
   assert.deepEqual(op.dimensions, { technique: null, ideas: 1, argument: null, emotion: null, attention: 2 });
   assert.deepEqual(op.unjudged.sort(), ['argument', 'emotion', 'technique']);
-  assert.equal(op.styleNotes.length, 1); assert.equal(op.disagreements[0].key, true);
+  assert.equal(op.styleNotes.length, 0, '没有原文时不留文体评语'); assert.equal(op.disagreements[0].key, true);
   console.log('v0.9 立场与证据 ✓', { pos, neg });
 }
 
@@ -390,4 +390,26 @@ console.log('以新版为准替换标签和关系 ✓');
   assert.equal(r.bundle.reactions[0].work, '新名'); assert.equal(r.bundle.readings[0].work, '新名'); assert.equal(r.refs, 2);
   assert.throws(() => B.replaceBundleItem(r.bundle, 'reactions', 0, { ...r.bundle.reactions[0], date: '' }));
   console.log('整理包逐条修改 ✓');
+}
+
+// —— 按新资料重推此人 ——
+{
+  const E3 = await import('../src/engine.js');
+  const t = defaultState(); t.seed = 'rp';
+  t.pennames = [{ id: 'pen', name: 'E.E.', knownBy: [] }];
+  t.outlets = [{ id: 'o', name: '某报', periodicity: 'daily', circle: 'general', tier: 3 }];
+  t.persons = [{ id: 'a', name: '甲', roles: ['critic'], outletIds: ['o'], interests: ['宗教'], likes: [], dislikes: [], closeness: 0, active: true, stances: [] }];
+  t.works = [{ id: 'w', title: '书', pennameId: 'pen', form: 'article', outletId: 'o', pubDate: '1890-03-01', themes: ['宗教'], claims: [{ issue: '死刑', side: 'con' }] }];
+  t.currentDate = '1890-03-01';
+  E3.advanceTo(t, '1890-05-01', S, null);
+  const before = t.receptions.find(r => r.personId === 'a');
+  assert(before && before.read !== 'none');
+  t.persons[0].stances = [{ issue: '死刑', side: 'pro', strength: 3 }];
+  const n = E3.rerollPerson(t, 'a');
+  assert(n >= 1 && !t.receptions.some(r => r.personId === 'a'));
+  E3.advanceTo(t, '1890-05-01', S, null);
+  const after = t.receptions.find(r => r.personId === 'a' && r.read !== 'none');
+  assert(after, '重推后应重新推演');
+  if (after.strength) assert(after.ideas?.disagree?.length === 1, '新立场应生效');
+  console.log('按新资料重推此人 ✓');
 }

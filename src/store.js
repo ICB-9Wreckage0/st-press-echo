@@ -1,4 +1,5 @@
 // store.js — 存档。故事数据跟着聊天存（chat metadata），设置和年代档案缓存跟着扩展设置存。
+import { stripSources } from './sources.js';
 
 import { DEFAULT_ENGINE_SETTINGS } from './engine.js';
 
@@ -12,8 +13,16 @@ export const DEFAULT_SETTINGS = {
     // 推演
     ...DEFAULT_ENGINE_SETTINGS,
     autoDetectDate: true,
+    // 世界书
+    loreEnabled: false,
+    loreAuto: true,
+    loreBook: '报刊回声',
+    loreScope: 'involved', // involved 读过作品/登记了立场/与主角相识的人 · all 全部人物
+    loreWorks: true,
+    loreBindChat: true,
     epiEnabled: true, // 书信簿（st-epistolary）联动总开关
-    epiSyncDate: true, // 书信簿（st-epistolary）推算出更晚的剧情日期时，一并采用
+    epiSyncDate: true,
+    epiSendAuto: true, // 入账并写好正文的私信，自动寄进书信簿（寄给主角） // 书信簿（st-epistolary）推算出更晚的剧情日期时，一并采用
     autoAdvance: true, // 旧版开关，保留兼容
     autoAdvanceMode: 'interval', // interval 故事时间每过 N 天推演一次 / every 每次识别到新日期 / off 只手动
     autoAdvanceDays: 14,
@@ -30,7 +39,8 @@ export const DEFAULT_SETTINGS = {
     aiFill: 'opinions', // off / brief 幕后补完 / opinions 再给新读者生成看法 / all 再给新入账反响写稿
     aiFillMax: 10,
     aiFillOnAuto: false,
-    autoFloorEvery: 0, // 每聊满 N 楼自动跑一次“一键推演到今天”（0 = 不按楼数）
+    autoFloorEvery: 0,
+    autoFloorDelay: 5, // 只按 N 楼之前的内容推演，最新几楼重roll、改写不会牵连 // 每聊满 N 楼自动跑一次“一键推演到今天”（0 = 不按楼数）
     aiSuggestPersons: true, // AI 补完时推荐可能读到作品的新人物（进待确认）
     consoleAuto: true,
     // 写稿
@@ -43,6 +53,8 @@ export const DEFAULT_SETTINGS = {
     realPersonPolicy: 'stance', // 'stance' 真实人物只写立场摘要；'full' 允许拟写全文（会标注虚构）
     outputLanguage: '中文',
     // 年代检索
+    eraRefresh: 'quarter', // 年代档案按季度 / 按月刷新（off 不刷新）
+    eraRefreshMode: 'auto', // auto 到期自动刷新（调用 1 次 AI）/ remind 只提醒
     wikiEnabled: true,
     wikiLangs: 'fr,en,zh',
     eraCache: {},
@@ -73,6 +85,13 @@ export function defaultState() {
         rolls: {},
         rumors: [],
         offscreen: [],
+        privateFacts: [], // 主角的私人信息与知情者
+        perceptions: [], // 每个人对作者的认知
+        factLeaks: [], // 私人信息可能外传的候选
+        selfImage: [], // 主角怎么看自己（self）、对外怎么说（claim）
+        assumed: [], // 主角以为某人 / 某圈子怎么看他
+        publicImages: [], // 各读者圈子的公众形象（AI 依据公开材料整理）
+        percReviews: [], // 认知对照分析（AI）
         reputation: {},
         pendingMerge: [],
         log: [],
@@ -87,7 +106,10 @@ export function getSettings() {
     const c = ctx();
     if (!c) return { ...DEFAULT_SETTINGS };
     const all = c.extensionSettings;
-    all[MODULE] = Object.assign({}, DEFAULT_SETTINGS, all[MODULE] || {});
+    const saved = all[MODULE];
+    // 旧版只有“识别到新日期后自动推演”开关：关着的迁移成“不自动”，开着的迁移成“按间隔”
+    if (saved && saved.autoAdvanceMode === undefined) saved.autoAdvanceMode = saved.autoAdvance === false ? 'off' : 'interval';
+    all[MODULE] = Object.assign({}, DEFAULT_SETTINGS, saved || {});
     all[MODULE].layerMult = Object.assign({}, DEFAULT_SETTINGS.layerMult, all[MODULE].layerMult || {});
     return all[MODULE];
 }
@@ -110,6 +132,7 @@ export function getState() {
 
 let saveTimer = null;
 export function saveState() {
+    try { const st = ctx()?.chatMetadata?.[MODULE]; if (st) stripSources(st, () => saveState()); } catch (e) { console.warn('[报刊回声]', e); }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
         const c = ctx();

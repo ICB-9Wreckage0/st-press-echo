@@ -315,3 +315,78 @@ export function peopleProposals(state) {
     }
     return out;
 }
+
+// ———————————— 写入：把私信寄进书信簿 ————————————
+// 只在书信簿插件正在运行时可用（备份文件不能写）。优先借用书信簿自己的 createLetter，
+// 保证编号、暗号、文件夹、分段都和手写的信一样；借不到时按书信簿的数据结构自己拼一封。
+
+let epiModel;
+async function loadEpiModel() {
+    if (epiModel !== undefined) return epiModel;
+    epiModel = null;
+    for (const dir of ['st-epistolary', 'SillyTavern-Epistolary', 'st-epistolary-main', 'epistolary']) {
+        try {
+            const m = await import(new URL(`../../${dir}/src/model.js`, import.meta.url).href);
+            if (typeof m.createLetter === 'function') { epiModel = m; break; }
+        } catch { /* 试下一个目录名 */ }
+    }
+    return epiModel;
+}
+export const epistolaryWritable = () => !!globalThis.epistolary?.store?.archive && typeof globalThis.epistolary.store.save === 'function';
+
+function manualLetter(archive, partial) {
+    archive.counters = archive.counters || {};
+    archive.counters.letter = (archive.counters.letter || 0) + 1;
+    const id = `LETTER-${String(archive.counters.letter).padStart(4, '0')}`;
+    const now = new Date().toISOString();
+    const body = partial.body || '';
+    const letter = {
+        id, kind: 'letter', status: 'sent', authenticity: 'original', title: partial.title || '', author: partial.author || '', signature: partial.signature || '',
+        recipients: partial.recipients || [], writtenAt: partial.writtenAt || '', placeFrom: partial.placeFrom || '', placeTo: '', language: '', tags: [], folder: '',
+        scope: partial.scope || '', scopeName: partial.scopeName || '', body, shell: false, code: '',
+        segments: body.split(/\n\s*\n/).map(t => t.trim()).filter(Boolean).map((text, i) => ({ id: `S${i + 1}`, text, keywords: [] })),
+        events: [], attachments: [], enclosures: [], appearance: {}, links: { works: [] }, inReplyTo: '', importance: '', autoFrom: null, envNote: '', blurb: '', blurbAuto: false, blurbHash: '',
+        replied: '', aiDraft: false, openedAt: '', delivery: null, autoDelivery: [], source: null, translations: {}, memories: [], recallKeys: [], codeFloors: [], whereabouts: null,
+        notes: partial.notes || '', createdAt: now, updatedAt: now,
+    };
+    archive.letters[id] = letter;
+    return letter;
+}
+
+/** 已经寄过的那封（按备注里的标记找） */
+export function sentLetterFor(ev) {
+    const letters = globalThis.epistolary?.store?.archive?.letters || {};
+    return Object.values(letters).find(l => String(l.notes || '').includes(`press-echo:${ev.id}`)) || null;
+}
+
+/** 把一条已写好的私信寄进书信簿。返回 { letter, existed } */
+export async function sendToEpistolary(state, ev, { person, protagonist = '' } = {}) {
+    if (!epistolaryWritable()) throw new Error('书信簿插件没有在运行（读进来的备份文件不能写回）');
+    if (ev.layer !== 'private_letter') throw new Error('只有私信能寄进书信簿');
+    if (!ev.text?.body) throw new Error('这封私信还没写正文，先写稿');
+    if (ev.text.stanceOnly) throw new Error('这封是真实人物的“立场摘要”，不是信的原文。要寄，请在设置里把“真实人物”改成允许拟写全文，再重写这封');
+    const old = sentLetterFor(ev);
+    if (old) return { letter: old, existed: true };
+    const store = globalThis.epistolary.store;
+    const archive = store.archive;
+    const c = ctx();
+    const me = protagonist || c?.name1 || '';
+    const sc = curScopeKey();
+    const ch = c?.characters?.[c.characterId];
+    const partial = {
+        kind: 'letter', status: 'sent', author: person?.name || ev.personName || '', signature: ev.text.byline || '',
+        recipients: me ? [me] : [], writtenAt: ev.date, title: ev.text.title || '', body: ev.text.body,
+        notes: `报刊回声推演出的私信（press-echo:${ev.id}）`,
+        ...(sc ? { scope: sc, scopeName: c?.groupId ? '' : ch?.name || '' } : {}),
+    };
+    const m = await loadEpiModel();
+    const letter = m ? m.createLetter(archive, partial) : manualLetter(archive, partial);
+    letter.events = letter.events || [];
+    const eid = () => `E${letter.events.length + 1}`;
+    letter.events.push({ id: eid(), type: 'written', who: letter.author, date: ev.date, segments: null, to: letter.recipients.join('、'), note: '报刊回声推演出的私信', place: '', mes: null, auto: false, chatId: '' });
+    letter.events.push({ id: eid(), type: 'sent', who: letter.author, date: ev.date, segments: null, to: letter.recipients.join('、'), note: '', place: '', mes: null, auto: false, chatId: '' });
+    store.save();
+    try { globalThis.epistolary.ui?.refresh?.(); } catch { /* 书信簿界面没开 */ }
+    ev.epiSent = { id: letter.id, code: letter.code || '', at: new Date().toISOString() };
+    return { letter, existed: false };
+}

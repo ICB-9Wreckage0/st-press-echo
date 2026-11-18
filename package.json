@@ -1,11 +1,11 @@
 {
     "name": "st-press-echo",
-    "version": "0.9.8",
+    "version": "0.15.0",
     "private": true,
     "type": "module",
     "description": "SillyTavern 扩展：文学/报刊特化的世界推演",
     "scripts": {
-        "test": "node test/run.js"
+        "test": "node test/run.js && node test/regress.js"
     },
     "license": "MIT"
 }

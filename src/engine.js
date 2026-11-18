@@ -12,6 +12,7 @@ import { addDays, diffDays, monthOf, monthKey, weekday, dayOf, cmp, normalizeISO
 import { roll } from './rng.js';
 import { clamp, uid, deepClone } from './util.js';
 import { matchCount, useConcepts, tagSim } from './concepts.js';
+import { factLeakCandidates } from './perception.js';
 
 // ———————————— 常量 ————————————
 
@@ -60,7 +61,9 @@ const ROLE_LAYERS = {
 };
 const ROLE_MOTIVE = { critic: 1, journalist: 0.9, scholar: 0.7, editor: 0.5, writer: 0.35 };
 
-export const READ_STATES = { none: '未接触', ignored: '接触但没读', skimmed: '浏览/读了一部分', finished: '读完' };
+export const READ_STATES = { none: '未接触', ignored: '接触但没读', skimmed: '浏览/读了一部分', finished: '读完', unknown: '读过，程度不详' };
+/** 算“读过”的阅读程度 */
+export const READ_DONE = ['skimmed', 'finished', 'unknown'];
 export const STRENGTH = { none: '印象不深', mild: '有些想法', strong: '想法强烈' };
 
 /**
@@ -75,7 +78,7 @@ export const OPINION_STATUS = {
     expressed: '已表达',
 };
 export function opinionStatus(rec) {
-    if (!rec || !['skimmed', 'finished'].includes(rec.read)) return 'unread';
+    if (!rec || !READ_DONE.includes(rec.read)) return 'unread';
     const said = ['private_letter', 'public'].includes(rec.expression) || (rec.expression === 'remark' && rec.told > 0);
     if (rec.opinion) return said ? 'expressed' : 'private';
     if (said) return 'expressed';
@@ -98,6 +101,7 @@ export const CHANNELS = {
     seek: '读过同一作者的作品，主动找来读',
     follow: '追读这位作者，新作一出就看',
     recommend: '熟人谈起或推荐',
+    browse: '偶尔翻到这份大报（没登记常读刊物，按可能接触算）',
     shelf: '书店、图书馆或沙龙里碰到（成书长期流通）',
     manual: '手动记录',
 };
@@ -201,10 +205,15 @@ export function stanceText(m) {
     return parts.join('。');
 }
 
+/** 确定常读的刊物：手填的“常读”加上自己供稿的 */
 export function readsOutlets(state, person) {
-    if (person.reads?.length) return new Set([...person.reads, ...(person.outletIds || [])]);
-    // 没填就默认：自己供稿的刊物 + 影响力 4 级以上的大报（人人都会翻）
-    return new Set([...(person.outletIds || []), ...(state.outlets || []).filter(o => (o.tier || 3) >= 4).map(o => o.id)]);
+    return new Set([...(person.reads || []), ...(person.outletIds || [])]);
+}
+/** 可能翻到的大报：没填“常读”的人，影响力 4 级以上的大报有时会翻到（概率比常读低得多） */
+export function mayBrowse(state, person) {
+    if (person.reads?.length) return new Set();
+    const mine = readsOutlets(state, person);
+    return new Set((state.outlets || []).filter(o => (o.tier || 3) >= 4 && !mine.has(o.id)).map(o => o.id));
 }
 
 export function parseBusy(text) {
@@ -228,7 +237,8 @@ export function columnSlots(outlet, from, to) {
     const days = Math.min(400, Math.max(0, diffDays(to, from)));
     for (let i = 0; i <= days; i++) {
         const d = addDays(from, i);
-        if (per === 'daily' || per === 'irregular') out.push(d);
+        if (per === 'irregular' && outlet.issueDates?.length) { if (outlet.issueDates.includes(d)) out.push(d); }
+        else if (per === 'daily' || per === 'irregular') out.push(d);
         else if (per === 'weekly') {
             const wd = Number.isInteger(outlet.weekday) ? outlet.weekday : 0;
             if (weekday(d) === wd) out.push(d);
@@ -339,6 +349,9 @@ export function recomputeReputation(state) {
     state.reputation = rep;
 }
 
+/** 每次掷骰编一个递增序号：回滚时只需记下“当时编到第几号”，不用复制整张表 */
+export function nextRollQ(state) { state.rollSeq = (state.rollSeq || 0) + 1; return state.rollSeq; }
+
 export function setStatus(state, ev, status) {
     ev.status = status;
     recomputeReputation(state);
@@ -358,6 +371,8 @@ function contactStage(state, s, era, work, person, seed, extra) {
     } else if (host && (person.outletIds || []).includes(host.id)) add('staff', 0.95, [0, 1]);
     else if (host && readsOutlets(state, person).has(host.id)) {
         add('reader', { daily: 0.7, weekly: 0.75, biweekly: 0.8, monthly: 0.85 }[host.periodicity] ?? 0.7, [0, 2]);
+    } else if (host && mayBrowse(state, person).has(host.id)) {
+        add('browse', (host.tier || 3) >= 5 ? 0.3 : 0.2, [0, 4]);
     }
     if (!extra) {
         const close = person.closeness || 0;
@@ -409,7 +424,7 @@ function readStage(state, s, era, work, person, contact, seed) {
     const busy = isBusy(person, contact.date);
     if (busy) { p *= 0.35; why.push('正处于忙碌期 ×0.35'); }
     if (work.parentId) {
-        const prev = (state.receptions || []).find(r => r.workId === work.parentId && r.personId === person.id && ['skimmed', 'finished'].includes(r.read));
+        const prev = (state.receptions || []).find(r => r.workId === work.parentId && r.personId === person.id && READ_DONE.includes(r.read));
         if (prev) { p *= 0.3; why.push('已读过另一个版本 ×0.3'); }
     }
     p = clamp(p, 0, 0.97);
@@ -506,7 +521,7 @@ function expressionStage(state, s, era, work, person, read, op, seed, via) {
             why.push(`想写${LAYERS[pick.layer].label}（约 ${slot.date} 见报），但这段时间的公开报道以已导入的记录为准 → 不另行推演，记为私下谈起`);
         } else if (slot.date) {
             why.push(`决定写${LAYERS[pick.layer].label}，约 ${writeReady} 可以交稿；${pick.outlet.name}截稿提前 ${slot.deadline} 天、每期至多 ${slot.cap} 篇 → 排在 ${slot.date}`);
-            out.events.push({ layer: pick.layer, outletId: pick.outlet.id, date: slot.date, polarity: pick.layer === 'polemic' && op.polarity === 0 ? -1 : op.polarity, reactsTo: pick.layer === 'polemic' && via ? via.id : null });
+            out.events.push({ layer: pick.layer, outletId: pick.outlet.id, date: slot.date, polarity: pick.layer === 'polemic' && op.polarity === 0 ? -1 : op.polarity, reactsTo: pick.layer === 'polemic' && via ? via.id : null, irregular: pick.outlet.periodicity === 'irregular' && !pick.outlet.issueDates?.length });
             out.expression = 'public';
             published = true;
         } else {
@@ -583,7 +598,7 @@ function shelfStage(state, s, era, seed, newDate, report) {
             for (let i = 0; i < months.length; i++) {
                 const key = `${work.id}|${person.id}|shelf|${months[i].slice(0, 7)}`;
                 if (state.rolls[key]) continue;
-                state.rolls[key] = { at: newDate };
+                state.rolls[key] = { q: nextRollQ(state), at: newDate };
                 const bz = penBuzz(state, work.pennameId, months[i]);
                 const buzzF = clamp(1 + 0.3 * bz.n, 1, 3);
                 const p = clamp(base * Math.pow(0.88, i) * repF * buzzF * (0.4 + interest), 0, 0.5);
@@ -598,28 +613,49 @@ function shelfStage(state, s, era, seed, newDate, report) {
     }
 }
 
+// ———————————— 日期精度：首发日期不确定时，按可能的日子推算 ————————————
+const daysInMonth = d => { const [y, m] = d.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); };
+/** 只知道旬、月份或“不晚于”的作品：在可能范围内取一个确定的日子（同一份存档每次一样） */
+export function effectivePubDate(state, work) {
+    const d = work.pubDate;
+    const prec = work.datePrecision;
+    if (!d || !prec || prec === 'day') return d;
+    const r = roll(state.seed || 'press-echo', `${work.id}|pubdate`);
+    if (prec === 'xun') { const day = Number(d.slice(8)); const span = day >= 21 ? daysInMonth(d) - day + 1 : 10; return addDays(d, Math.floor(r * span)); }
+    if (prec === 'month') return addDays(d.slice(0, 8) + '01', Math.floor(r * daysInMonth(d)));
+    if (prec === 'noLaterThan') return addDays(d, -Math.floor(r * 21));
+    return d;
+}
+const PREC_TXT = { xun: '只知道旬', month: '只知道月份', noLaterThan: '只知道不晚于这天' };
+function timedWork(state, work) {
+    const eff = effectivePubDate(state, work);
+    if (!eff || eff === work.pubDate) return work;
+    return { ...work, pubDate: eff, _pubNote: `首发日期不确定（${PREC_TXT[work.datePrecision] || ''} ${work.pubDate}），按 ${eff} 推算` };
+}
+
 function runPipeline(state, s, era, work, person, seed, report, opts = {}) {
+    work = timedWork(state, work);
     const { via, manualRead } = opts;
     let rec;
     if (manualRead) {
         rec = manualRead;
     } else {
-        const extra = via ? { ch: 'review', p: 0.5, lag: [0, 3], from: via.date }
+        const extra = via ? { ch: 'review', p: opts.viaP ?? 0.5, lag: [0, 3], from: via.date }
             : opts.seek ? { ch: 'seek', p: opts.seek.p, lag: [0, 1], from: opts.seek.date }
             : opts.recommend ? { ch: 'recommend', p: 0.6, lag: [0, 4], from: opts.recommend.date }
             : opts.shelf ? { ch: 'shelf', p: 1, lag: [0, 25], from: opts.shelf.date } : null;
         const c = contactStage(state, s, era, work, person, seed, extra);
         rec = {
-            id: uid('rc'), key: `${work.id}|${person.id}${via ? '|via' : opts.seek ? '|seek' : opts.recommend ? '|rec' : opts.shelf ? '|shelf' : ''}`, origin: 'engine', workId: work.id, personId: person.id,
+            id: uid('rc'), q: nextRollQ(state), key: `${work.id}|${person.id}${via ? '|via' : opts.seek ? '|seek' : opts.recommend ? '|rec' : opts.shelf ? '|shelf' : ''}`, origin: 'engine', workId: work.id, personId: person.id,
             channel: c.best?.ch || null, contactDate: c.best?.date || null, read: c.best ? null : 'none',
-            why: [...(opts.shelf ? [opts.shelf.why] : []), ...c.why], eventIds: [], opinion: null, viaEventId: via?.id || null,
+            why: [...(work._pubNote ? [work._pubNote] : []), ...(opts.shelf ? [opts.shelf.why] : []), ...c.why], eventIds: [], opinion: null, viaEventId: via?.id || null,
         };
         if (c.best) {
             const r = readStage(state, s, era, work, person, c.best, seed + (via ? '|via' : opts.seek ? '|seek' : opts.recommend ? '|rec' : opts.shelf ? '|shelf' + opts.shelf.date : ''));
             rec.read = r.read; rec.readDate = r.readDate || null; rec.why.push(...r.why); rec.interest = r.interest;
         }
     }
-    if (rec.read === 'skimmed' || rec.read === 'finished') {
+    if (READ_DONE.includes(rec.read)) {
         const read = { read: rec.read, readDate: rec.readDate, interest: rec.interest ?? interestOf(person, workTags(state, work)) };
         const op = opinionStage(state, work, person, read, seed);
         if (rec.known && rec.known.polarity != null) {
@@ -632,10 +668,11 @@ function runPipeline(state, s, era, work, person, seed, report, opts = {}) {
         rec.expression = ex.expression; rec.why.push(...ex.why);
         for (const e of ex.events) {
             const ev = {
-                id: uid('ev'), key: `${rec.key}|${e.layer}`, origin: 'engine', date: e.date, layer: e.layer,
+                id: uid('ev'), q: nextRollQ(state), key: `${rec.key}|${e.layer}`, origin: 'engine', date: e.date, layer: e.layer,
                 personId: person.id, outletId: e.outletId, workId: work.id, pennameId: work.pennameId || null,
                 polarity: e.polarity, status: 'scheduled', receptionId: rec.id, reactsTo: e.reactsTo || null,
-                text: null, flags: [], repApplied: null, why: rec.why.slice(),
+                to: e.layer === 'private_letter' ? 'protagonist' : null, knownAt: e.date,
+                text: null, flags: e.irregular ? ['不定期刊物：这期哪天出、是否真的出了，并不确定，请核对'] : [], repApplied: null, why: rec.why.slice(),
             };
             state.ledger.push(ev);
             rec.eventIds.push(ev.id);
@@ -699,31 +736,37 @@ const FREQ_LAG = { daily: [0, 2], weekly: [1, 8], monthly: [5, 30], rare: [10, 6
  * 而且不直接改数据，只记为“可能的知情扩散”，由你确认。
  */
 function talkStage(state, s, era, work, person, rec, seed, report) {
-    if (!['skimmed', 'finished'].includes(rec.read) || rec.strength === 'none' || !rec.readDate) return;
+    if (!READ_DONE.includes(rec.read) || rec.strength === 'none' || !rec.readDate) return;
     const told = [];
     for (const rel of relationsOf(state, person)) {
         if (rel.discloseOpinions === false) continue;
-        if ((rel.since && cmp(rec.readDate, rel.since) < 0) || (rel.until && cmp(rec.readDate, rel.until) > 0)) continue; // 那时还没认识 / 已经断了往来
         const q = byId(state.persons, rel.to);
         if (!q || q.active === false) continue;
         const freq = rel.frequency || 'monthly';
         const p = clamp((FREQ_P[freq] ?? 0.3) * (0.5 + 0.2 * (Number(rel.closeness) || 0)) * (rec.strength === 'strong' ? 1.3 : 0.8), 0, 0.9);
         const key = `${work.id}|${person.id}|talk|${q.id}`;
         if (roll(seed, key) >= p) continue;
-        const date = addDays(rec.readDate, between(seed, key + '|lag', FREQ_LAG[freq] || [3, 20]));
+        // 先定下实际交谈的日子，再看那天两人的关系是否有效
+        let date = addDays(rec.readDate, between(seed, key + '|lag', FREQ_LAG[freq] || [3, 20]));
+        if (rel.since && cmp(date, rel.since) < 0) {
+            // 读完时还不认识：若一个月内结识，记忆犹新，可能在结识后谈起；否则不谈
+            if (diffDays(rel.since, rec.readDate) > 30) continue;
+            date = addDays(rel.since, between(seed, key + '|lag2', [0, 4]));
+        }
+        if (rel.until && cmp(date, rel.until) > 0) continue; // 到交谈那天已经断了往来
         told.push(`${q.name}（${REL_TYPES[rel.type] || '熟人'}，约 ${date}）`);
-        const had = (state.receptions || []).some(r => r.workId === work.id && r.personId === q.id && ['skimmed', 'finished'].includes(r.read));
+        const had = (state.receptions || []).some(r => r.workId === work.id && r.personId === q.id && READ_DONE.includes(r.read));
         if (!had) {
             state.recommends = state.recommends || {};
             const box = (state.recommends[work.id] = state.recommends[work.id] || {});
             if (!box[q.id] || cmp(date, box[q.id].date) < 0) {
-                box[q.id] = { date, by: person.id, byName: person.name, polarity: rec.polarity, p: rec.polarity === 1 ? 0.55 : rec.polarity === -1 ? 0.3 : 0.4 };
+                box[q.id] = { q: nextRollQ(state), date, by: person.id, byName: person.name, polarity: rec.polarity, p: rec.polarity === 1 ? 0.55 : rec.polarity === -1 ? 0.3 : 0.4 };
                 const rk = `${work.id}|${q.id}|recommend`;
                 if (state.rolls?.[`${work.id}|${q.id}`] && !state.rolls[rk]) {
-                    state.rolls[rk] = { at: date };
+                    state.rolls[rk] = { q: nextRollQ(state), at: date };
                     const prev = (state.receptions || []).filter(r => r.workId === work.id && r.personId === q.id && r.origin !== 'manual');
                     const nr = runPipeline(state, s, era, work, q, seed, report, { recommend: { date, by: person } });
-                    if (['skimmed', 'finished'].includes(nr.read)) for (const r of prev) r.superseded = nr.id;
+                    if (READ_DONE.includes(nr.read)) for (const r of prev) r.superseded = nr.id;
                 }
             }
         }
@@ -738,6 +781,9 @@ function talkStage(state, s, era, work, person, rec, seed, report) {
                 }
             }
         }
+        // 主角的私人信息（语言、出身、创作意图……）：知情者谈起时可能说出去，只出候选
+        const fl = factLeakCandidates(state, { person, q, rel, date, roll: k => roll(seed, `${key}|fact|${k}`) });
+        if (fl.length) told.push(`（可能向${q.name}说起了主角的私事 ${fl.length} 条，待确认）`);
     }
     if (told.length) { rec.why.push(`和熟人谈起：${told.join('、')}`); rec.told = told.length; }
     else if (rec.expression === 'remark') { rec.expression = 'silent'; rec.why.push('没碰上合适的人谈起 → 放在心里'); }
@@ -769,13 +815,13 @@ function seekAffinity(state, work, person, trigger) {
  * 每一步都只在当时的时间点上判断，可以中断，也可以在下一次阅读后重新开始。
  */
 function seekStage(state, s, era, work, person, rec, seed, report) {
-    if (!['skimmed', 'finished'].includes(rec.read) || !work.pennameId || !rec.readDate) return;
+    if (!READ_DONE.includes(rec.read) || !work.pennameId || !rec.readDate) return;
     const pen = byId(state.pennames, work.pennameId);
     const strong = rec.strength === 'strong' ? 1 : rec.strength === 'mild' ? 0.5 : 0;
     let delta = rec.polarity === 1 ? 0.6 + 0.4 * strong : rec.polarity === 0 ? 0.15 + 0.1 * strong : -0.5 - 0.3 * strong;
-    if (rec.read === 'skimmed') delta *= 0.5;
+    if (rec.read !== 'finished') delta *= 0.5;
     const before = impressionAt(state, work.pennameId, person.id, rec.readDate);
-    addImpression(state, work.pennameId, person.id, { date: rec.readDate, delta: +delta.toFixed(2), workId: work.id });
+    addImpression(state, work.pennameId, person.id, { date: rec.readDate, delta: +delta.toFixed(2), workId: work.id, recId: rec.id });
     const after = impressionAt(state, work.pennameId, person.id, rec.readDate);
     rec.why.push(`对“${pen?.name || ''}”的印象：${IMPRESSION_LABEL(before)} → ${IMPRESSION_LABEL(after)}（${delta >= 0 ? '+' : ''}${delta.toFixed(2)}）`);
 
@@ -794,12 +840,12 @@ function seekStage(state, s, era, work, person, rec, seed, report) {
     rec.seek = since;
     const tried = [];
     for (const w of others) {
-        const had = (state.receptions || []).some(r => r.workId === w.id && r.personId === person.id && ['skimmed', 'finished'].includes(r.read));
+        const had = (state.receptions || []).some(r => r.workId === w.id && r.personId === person.id && READ_DONE.includes(r.read));
         if (had) continue;
         if (!state.rolls?.[`${w.id}|${person.id}`]) continue; // 还没轮到的，轮到时 contactStage 会按“主动去找”处理
         const rk = `${w.id}|${person.id}|seek|${work.id}`; // 每次被勾起兴趣都可以重试
         if (state.rolls[rk]) continue;
-        state.rolls[rk] = { at: since };
+        state.rolls[rk] = { q: nextRollQ(state), at: since };
         const want = seekAffinity(state, w, person, work);
         const avail = seekAvailability(state, w, person);
         if (roll(seed, rk + '|want') >= want) { tried.push(`《${w.title}》不太想看（${Math.round(want * 100)}%）`); continue; }
@@ -807,7 +853,7 @@ function seekStage(state, s, era, work, person, rec, seed, report) {
         tried.push(`《${w.title}》找到了`);
         const prev = (state.receptions || []).filter(r => r.workId === w.id && r.personId === person.id && r.origin !== 'manual');
         const nr = runPipeline(state, s, era, w, person, seed, report, { seek: { p: 1, date: addDays(since, between(seed, rk + '|lag', [0, 10])) } });
-        if (['skimmed', 'finished'].includes(nr.read)) for (const r of prev) r.superseded = nr.id;
+        if (READ_DONE.includes(nr.read)) for (const r of prev) r.superseded = nr.id;
     }
     rec.why.push(`想不想找这位作者的其他作品：概率 ${Math.round(p * 100)}% → 约 ${since} 起开始留意这个署名${tried.length ? '；' + tried.join('；') : ''}`);
 }
@@ -839,8 +885,8 @@ export function advanceTo(state, newDate, settings, era) {
             // 已有手动记录或已确认事件：不重复推演
             const exist = state.ledger.some(e => e.workId === work.id && e.personId === person.id && e.origin === 'manual' && e.status !== 'rejected')
                 || state.receptions.some(r => r.workId === work.id && r.personId === person.id && r.origin === 'manual');
-            if (exist) { state.rolls[key] = { preexisting: true, at: newDate }; report.diag.preexisting++; continue; }
-            state.rolls[key] = { at: newDate };
+            if (exist) { state.rolls[key] = { q: nextRollQ(state), preexisting: true, at: newDate }; report.diag.preexisting++; continue; }
+            state.rolls[key] = { q: nextRollQ(state), at: newDate };
             report.diag.run++;
             runPipeline(state, s, era, work, person, seed, report);
         }
@@ -859,10 +905,11 @@ export function advanceTo(state, newDate, settings, era) {
             if (person.active === false || person.id === ev.personId) continue;
             const key = `${work.id}|${person.id}|via|${ev.id}`;
             if (state.rolls[key]) continue;
-            const had = state.receptions.some(r => r.workId === work.id && r.personId === person.id && ['skimmed', 'finished', 'ignored'].includes(r.read));
-            if (had || !readsOutlets(state, person).has(ev.outletId)) continue;
-            state.rolls[key] = { at: newDate };
-            runPipeline(state, s, era, work, person, seed, report, { via: ev });
+            const had = state.receptions.some(r => r.workId === work.id && r.personId === person.id && [...READ_DONE, 'ignored'].includes(r.read));
+            const regular = readsOutlets(state, person).has(ev.outletId);
+            if (had || (!regular && !mayBrowse(state, person).has(ev.outletId))) continue;
+            state.rolls[key] = { q: nextRollQ(state), at: newDate };
+            runPipeline(state, s, era, work, person, seed, report, { via: ev, viaP: regular ? 0.5 : 0.15 });
         }
     }
 
@@ -870,7 +917,7 @@ export function advanceTo(state, newDate, settings, era) {
     for (const work of state.works || []) {
         if (!work.pubDate || cmp(work.pubDate, newDate) > 0) continue;
         const host = byId(state.outlets, work.outletId);
-        const ref = work.endDate && cmp(work.endDate, newDate) <= 0 ? work.endDate : work.pubDate;
+        const ref = work.endDate && cmp(work.endDate, newDate) <= 0 ? work.endDate : effectivePubDate(state, work);
         if (host && outletSections(host).includes('reader_letters')) {
             const key = `${work.id}|readers`;
             const due = addDays(ref, 2);
@@ -880,7 +927,7 @@ export function advanceTo(state, newDate, settings, era) {
                 const formF = { serial: 1, translation_serial: 0.8, article: 0.6, book: 0.3, translation_book: 0.3, pamphlet: 0.2 }[work.form] ?? 0.5;
                 const r = roll(seed, key);
                 const count = Math.round(tierBase * formF * fameFactor(state, work.pennameId) * (0.5 + r) * seasonFactor(era, due));
-                state.rolls[key] = { count, at: newDate };
+                state.rolls[key] = { q: nextRollQ(state), count, at: newDate };
                 if (count >= 1) pushAggregate(state, report, { key, layer: 'reader_letters', date: due, outletId: host.id, work, count, why: [`《${host.name}》影响力 ${host.tier || 3} 级 × ${FORMS[work.form]} × 名气 × 季节 → 约 ${count} 封`] });
             }
         }
@@ -892,7 +939,7 @@ export function advanceTo(state, newDate, settings, era) {
             const tierF = { 1: 0.5, 2: 0.7, 3: 1, 4: 1.3, 5: 1.6 }[host?.tier || 3];
             const r = roll(seed, mkey);
             const count = Math.round(base * tierF * fameFactor(state, work.pennameId) * (0.4 + 1.2 * r) * seasonFactor(era, mdue));
-            state.rolls[mkey] = { count, at: newDate };
+            state.rolls[mkey] = { q: nextRollQ(state), count, at: newDate };
             if (count >= 1) pushAggregate(state, report, { key: mkey, layer: 'mentions', date: mdue, outletId: null, work, count, why: [`${FORMS[work.form]} × 发表刊物影响力 × 名气 × 季节 → 约 ${count} 条转载/提及（不计为独立评论）`] });
         }
     }
@@ -908,7 +955,7 @@ export function advanceTo(state, newDate, settings, era) {
     report.reapplied = reapplyDecisions(state, report.newCandidates);
     if (s.autoApprove === 'minor') {
         for (const ev of report.newCandidates) {
-            if (ev.status === 'candidate' && !isMajor(state, ev)) { ev.status = 'approved'; ev.auto = true; report.autoApproved.push(ev); }
+            if (ev.status === 'candidate' && !isMajor(state, ev) && !(ev.flags || []).some(f => f.startsWith('不定期刊物'))) { ev.status = 'approved'; ev.auto = true; report.autoApproved.push(ev); }
         }
     }
     recomputeReputation(state);
@@ -923,13 +970,13 @@ function skipAggregate(state, s, key, layer, work, due, newDate) {
     const manual = state.ledger.some(e => e.origin === 'manual' && e.layer === layer && e.workId === work.id && e.status !== 'rejected');
     const before = s.publicBefore && cmp(due, s.publicBefore) <= 0;
     if (!manual && !before) return false;
-    state.rolls[key] = { skipped: manual ? 'manual' : 'before', at: newDate };
+    state.rolls[key] = { q: nextRollQ(state), skipped: manual ? 'manual' : 'before', at: newDate };
     return true;
 }
 
 function pushAggregate(state, report, { key, layer, date, outletId, work, count, why }) {
     const ev = {
-        id: uid('ev'), key, origin: 'engine', date, layer, personId: null, outletId, workId: work.id,
+        id: uid('ev'), q: nextRollQ(state), key, origin: 'engine', date, layer, personId: null, outletId, workId: work.id,
         pennameId: work.pennameId || null, polarity: 0, count, status: 'candidate', text: null, flags: [], repApplied: null, why,
     };
     state.ledger.push(ev);
@@ -955,7 +1002,7 @@ export function recordManualReading(state, settings, era, { workId, personId, da
         known: known || null, // 已知他的态度（例如他写过的书评）：看法按这个定，不再随机
     };
     const report = { scheduled: 0, receptions: 0 };
-    state.rolls[`${workId}|${personId}`] = { manual: true };
+    state.rolls[`${workId}|${personId}`] = { q: nextRollQ(state), manual: true };
     runPipeline(state, s, era, work, person, state.seed, report, { manualRead: rec });
     // 已经过去的日期：立即揭晓
     for (const id of rec.eventIds) {
@@ -1009,11 +1056,42 @@ export function rerollWork(state, workId) {
     recomputeReputation(state);
 }
 
+/** 人物资料改了之后：撤掉此人推演出的、还没入账的阅读和反响，下次推演按新资料重来 */
+export function rerollPerson(state, personId) {
+    for (const k of Object.keys(state.rolls || {})) if (k.split('|')[1] === personId) delete state.rolls[k];
+    const keepRec = r => r.personId !== personId || r.origin === 'manual';
+    const dropEv = new Set((state.receptions || []).filter(r => !keepRec(r)).flatMap(r => r.eventIds || []));
+    const before = state.receptions.length;
+    state.ledger = state.ledger.filter(e => !(e.personId === personId && e.origin === 'engine' && e.status !== 'approved' && (dropEv.has(e.id) || !e.receptionId)));
+    state.receptions = (state.receptions || []).filter(keepRec);
+    // 此人推演出的印象、“追读”“熟人推荐”也一并撤掉
+    const keptIds = new Set(state.receptions.filter(r => r.personId === personId).map(r => r.id));
+    for (const pm of Object.values(state.impressions || {})) if (pm?.[personId]) pm[personId] = pm[personId].filter(x => !x.recId || keptIds.has(x.recId));
+    for (const box of Object.values(state.followers || {})) if (box) delete box[personId];
+    for (const box of Object.values(state.recommends || {})) {
+        if (!box) continue;
+        delete box[personId];
+        for (const [k, v] of Object.entries(box)) if (v?.by === personId) delete box[k];
+    }
+    recomputeReputation(state);
+    return before - state.receptions.length;
+}
+
+/**
+ * 主角此刻是否知道这条反响：
+ * - 公开见报的（书评、短讯、论战、转载、读者来信刊出）：见报那天起知道；
+ * - 寄给主角的私信：收到那天起知道（没写收信人的私信按寄给主角算）；
+ * - 别人之间的私信、私下的事：只有标了“主角得知”的日子之后才知道。
+ */
 export function knownToUser(state, ev) {
     if (ev.status !== 'approved') return false;
-    if (state.currentDate && cmp(ev.date, state.currentDate) > 0) return false;
-    return true;
+    const today = state.currentDate;
+    if (today && cmp(ev.date, today) > 0) return false;
+    if (LAYERS[ev.layer]?.public) return true;
+    if (isToProtagonist(ev)) return !ev.knownAt || !today || cmp(ev.knownAt, today) <= 0;
+    return !!(ev.knownAt && (!today || cmp(ev.knownAt, today) <= 0));
 }
+export const isToProtagonist = ev => !ev.to || ev.to === 'protagonist';
 
 export { LAG_CLOSE, DEFAULT_CAPACITY, DEFAULT_DEADLINE };
 
@@ -1093,7 +1171,7 @@ export function backfillStep(state, settings, era, toDate) {
         if (!work || !person) { state.receptions.push(rec); continue; }
         rec.why = (rec.why || []).filter(w => w.startsWith('手动记录'));
         rec.eventIds = (rec.eventIds || []).filter(id => state.ledger.some(e => e.id === id));
-        state.rolls[`${work.id}|${person.id}`] = { manual: true };
+        state.rolls[`${work.id}|${person.id}`] = { q: nextRollQ(state), manual: true };
         runPipeline(state, s, era, work, person, seed, rep0, { manualRead: rec });
     }
     let d = state.currentDate;
@@ -1108,7 +1186,7 @@ export function backfillStep(state, settings, era, toDate) {
     for (const e of added) e.backfill = true;
     const newRecs = state.receptions.filter(r => !recBefore.has(`${r.id}|${r.read}`) && r.origin !== 'manual');
     const cnt = k => newRecs.filter(r => r.read === k && (!r.readDate || cmp(r.readDate, target) <= 0)).length;
-    const reads = newRecs.filter(r => ['skimmed', 'finished'].includes(r.read) && r.readDate && cmp(r.readDate, target) <= 0)
+    const reads = newRecs.filter(r => READ_DONE.includes(r.read) && r.readDate && cmp(r.readDate, target) <= 0)
         .map(r => ({ personId: r.personId, workId: r.workId, read: r.read, readDate: r.readDate, polarity: r.polarity, strength: r.strength, channel: r.channel }));
     const out = { reads, from, to: target, finished: cnt('finished'), skimmed: cnt('skimmed'), ignored: cnt('ignored'), none: newRecs.filter(r => r.read === 'none').length, events: added.length, candidates: added.filter(e => e.status === 'candidate').length, diag };
     run.stepped.push({ to: target, ...out, at: new Date().toISOString() });
@@ -1199,7 +1277,7 @@ export function simulate(state, settings, era, { workId, personId = null, outlet
             if (!a) continue;
             if (r.workId === work.id) {
                 if (r.read && r.read !== 'none') a.contact++;
-                if (['skimmed', 'finished'].includes(r.read)) {
+                if (READ_DONE.includes(r.read)) {
                     a.read++;
                     if (r.read === 'finished') a.finished++;
                     if (r.polarity === 1) a.pos++; else if (r.polarity === -1) a.neg++; else a.mid++;
@@ -1208,7 +1286,7 @@ export function simulate(state, settings, era, { workId, personId = null, outlet
                 }
                 if (r.seek) a.seek++;
                 if (i === 0) sample[r.personId] = r;
-            } else if (['skimmed', 'finished'].includes(r.read)) {
+            } else if (READ_DONE.includes(r.read)) {
                 a.alsoRead[r.workId] = (a.alsoRead[r.workId] || 0) + 1;
             }
         }

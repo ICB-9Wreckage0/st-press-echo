@@ -4,12 +4,14 @@
 
 import { callLLM } from './llm.js';
 import { extractJSON, truncate } from './util.js';
-import { LAYERS, FORMS, CIRCLES, PERIODICITY, byId } from './engine.js';
+import { LAYERS, FORMS, CIRCLES, PERIODICITY, byId, READ_DONE } from './engine.js';
 import { weekdayZh, yearOf } from './date.js';
 import { eraBrief } from './era.js';
+import { factsKnownBy, perceptionsOf, claimsVisible, PERC_KIND } from './perception.js';
 import { cardText, generateOpinion, stanceLines, stylePrefLines, claimLines, RESPECT, FOLLOW } from './analysis.js';
 
 export { eraBrief };
+const addDayStr = d => { const t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + 1); return t.toISOString().slice(0, 10); };
 
 const POL = { 1: '总体肯定', 0: '褒贬参半', '-1': '总体批评' };
 
@@ -39,7 +41,8 @@ export function buildWriterPrompt(state, ev, era, settings) {
     const stanceOnly = real && settings.realPersonPolicy !== 'full' && ev.layer !== 'reader_letters' && ev.layer !== 'mentions';
     const reactsTo = ev.reactsTo ? state.ledger.find(e => e.id === ev.reactsTo) : null;
     const earlier = state.ledger
-        .filter(e => e.workId === ev.workId && e.status === 'approved' && e.id !== ev.id && e.date <= ev.date && e.text?.summary)
+        // 写稿人只看得到见报的文章，以及他自己写的；别人的私信他不知道
+        .filter(e => e.workId === ev.workId && e.status === 'approved' && e.id !== ev.id && e.date <= ev.date && e.text?.summary && (LAYERS[e.layer]?.public || (ev.personId && e.personId === ev.personId)))
         .slice(-5);
 
     const system = `你在为一部以 ${state.currentDate || ''} 为当前日期的历史故事，撰写一份当时报刊或信件中的文字。
@@ -72,6 +75,11 @@ ${eraBrief(era)}
         if (stanceLines(person).length) lines.push(`  议题立场：${stanceLines(person).join('；')}`);
         if (stylePrefLines(person).length) lines.push(`  文体偏好（倾向，不是规则）：${stylePrefLines(person).join('；')}`);
         if (person.notes) lines.push(`  备注：${person.notes}`);
+        const kf = factsKnownBy(state, person.id, ev.date);
+        if (kf.length) lines.push(`  他私下知道的主角情况（${ev.layer === 'private_letter' ? '私信里可以按交情提到' : '这是公开文章：绝不能写出来，也不能暗示'}）：${kf.map(x => x.fact.text).join('；')}`);
+        else lines.push('  他不知道主角的任何私人情况（身世、国籍、母语等），文中不得涉及。');
+        const pb = perceptionsOf(state, person.id, { before: addDayStr(ev.date) }).slice(-5);
+        if (pb.length) lines.push(`  他对作者的认知：${pb.map(b => `${b.belief}（${PERC_KIND[b.kind]}）`).join('；')}`);
         lines.push(`  与主角私交：${['陌生', '认识', '朋友', '至交'][person.closeness || 0]}；${pen?.knownBy?.includes(person.id) || person.knowsIdentity ? '知道笔名背后是谁' : '不知道笔名背后是谁'}`);
     } else if (ev.personName) lines.push(`写稿人：${ev.personName}`);
     lines.push(`褒贬方向：${POL[ev.polarity] || '褒贬参半'}`);
@@ -82,6 +90,8 @@ ${eraBrief(era)}
         lines.push(`《${work.title}》，署名 ${pen?.name || '不详'}，${FORMS[work.form] || ''}，${work.pubDate}${work.endDate ? '–' + work.endDate : ''} 发表于《${byId(state.outlets, work.outletId)?.name || '不详'}》`);
         if (work.themes?.length) lines.push(`题材：${work.themes.join('、')}`);
         if (work.summary) lines.push(`内容：${work.summary}`);
+        const cv = claimsVisible(state, pen?.id, ev.date).slice(-5);
+        if (cv.length) lines.push(`作者以这个署名公开说过（可以引用、反驳或不理会）：${cv.map(c => c.text).join('；')}`);
         if (claimLines(work).length) lines.push(`作品的主张：${claimLines(work).join('；')}`);
         if (work.evidence) { lines.push('证据卡：'); lines.push(cardText(work.evidence, 3000)); }
     }
@@ -140,7 +150,7 @@ export function checkAnachronism(text, era, ev, state) {
 export async function writeEvent(state, ev, era, settings) {
     // 先补上私下看法，保证公开文章与私下看法一致
     const rec = ev.receptionId ? (state.receptions || []).find(r => r.id === ev.receptionId) : null;
-    if (rec && !rec.opinion && ['skimmed', 'finished'].includes(rec.read)) {
+    if (rec && !rec.opinion && READ_DONE.includes(rec.read)) {
         try { await generateOpinion(state, rec, era, settings); } catch (e) { console.warn('[报刊回声] 生成看法失败，继续写稿', e); }
     }
     const { system, user, stanceOnly } = buildWriterPrompt(state, ev, era, settings);
@@ -159,4 +169,58 @@ export async function writeEvent(state, ev, era, settings) {
     ev.text = text;
     ev.flags = [...(ev.flags || []).filter(f => !/时代错置|晚于当前年份/.test(f)), ...checkAnachronism(text, era, ev, state)];
     return ev;
+}
+
+// ———————————— 法语原文：报纸版面以法语为主 ————————————
+
+const latinName = t => /[A-Za-zÀ-ÿ]/.test(t || '') && !/[一-鿿]/.test(t || '');
+/** 中文名 → 法文原名的对照表（人物别名、刊物原名、作品别名、笔名） */
+function nameMap(state) {
+    const L = [];
+    for (const p of state.persons || []) { const f = (p.aliases || []).find(latinName); if (f) L.push(`${p.name} = ${f}`); }
+    for (const o of state.outlets || []) if (o.originalName) L.push(`《${o.name}》 = ${o.originalName}`);
+    for (const w of state.works || []) { const f = (w.aliases || []).find(latinName); if (f) L.push(`《${w.title}》 = « ${f} »`); }
+    for (const p of state.pennames || []) if (latinName(p.name)) L.push(`署名 ${p.name}`);
+    return L;
+}
+
+/**
+ * 把一版报纸上的文章还原成当时的法语（一次调用处理一批）。结果写进 e.text.fr。
+ * 只是语言还原：不增删内容、不改褒贬、不改署名。
+ */
+export async function translatePaperFr(state, events, era, settings) {
+    const list = events.filter(e => e.text && (e.text.body || e.text.summary || e.text.title));
+    if (!list.length) return 0;
+    const map = nameMap(state);
+    let done = 0;
+    // 每批不超过约 7000 字
+    const batches = []; let cur = [], len = 0;
+    for (const e of list) { const n = (e.text.body || e.text.summary || '').length + 80; if (cur.length && len + n > 7000) { batches.push(cur); cur = []; len = 0; } cur.push(e); len += n; }
+    if (cur.length) batches.push(cur);
+    for (const b of batches) {
+        const system = `你是 ${yearOf(b[0].date) || ''} 年巴黎报馆的老编辑。下面是几篇以中文写成的稿子，内容都已定稿；请把它们还原成当时巴黎报刊会刊出的法语原文。
+规则：
+1. 只换语言、不改内容：不增加论点和细节，不删要点，不改变褒贬和语气的强弱。
+2. 用当时报刊的法语文体与惯例（称呼、引号 « »、栏目用语、署名习惯），不用现代说法；不得出现 ${b[0].date} 之后才有的事物。
+3. 人名、刊名、作品名一律用下面对照表里的法文原名；对照表里没有的作品名，按中文意思译成合乎当时习惯的法文标题。
+4. 标题、栏目名也译成法文（栏目名用当时常见的说法，如 Critique littéraire、Échos、Livres nouveaux、Courrier des lecteurs）。署名照原样保留（笔名本来就是西文的不要改）。
+5. 原稿是“立场摘要”（第三人称概述）的，也照样译成第三人称概述，不要改写成第一人称文章。
+6. 只输出 JSON：{"items":[{"id":"原样照抄","title":"","section":"","byline":"","body":"法语正文，段落之间空一行"}]}`;
+        const user = `${map.length ? '【名称对照】\n' + map.join('\n') + '\n\n' : ''}${b.map(e => `【id: ${e.id}】${e.text.stanceOnly ? '（立场摘要）' : ''}
+栏目：${e.text.section || LAYERS[e.layer]?.label || ''}
+标题：${e.text.title || ''}
+署名：${e.text.byline || ''}
+正文：
+${e.text.body || e.text.summary || ''}`).join('\n\n———\n\n')}`;
+        const raw = await callLLM({ system, user, settings, maxTokens: Math.min(8000, 800 + b.reduce((n, e) => n + (e.text.body || e.text.summary || '').length * 3, 0)), label: `法语原文（${b.length} 篇）` });
+        const out = extractJSON(raw);
+        const items = Array.isArray(out?.items) ? out.items : Array.isArray(out) ? out : [];
+        for (const it of items) {
+            const e = b.find(x => x.id === String(it.id || '').trim());
+            if (!e || !it.body) continue;
+            e.text.fr = { title: String(it.title || ''), section: String(it.section || ''), byline: String(it.byline || e.text.byline || ''), body: String(it.body), at: new Date().toISOString() };
+            done++;
+        }
+    }
+    return done;
 }

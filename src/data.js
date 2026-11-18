@@ -150,6 +150,9 @@ export function addManualEvent(state, fields) {
         status: 'candidate',
         text: fields.summary ? { summary: fields.summary, body: '', title: '', byline: '', section: '' } : null,
         flags: ['手动录入'], repApplied: null,
+        // 私信的收信人：'protagonist' = 主角；其他人名 = 别人之间的信（主角要等 knownAt 才知道）
+        to: fields.layer === 'private_letter' ? (fields.to || 'protagonist') : null,
+        knownAt: normalizeISO(fields.knownAt) || (fields.layer !== 'private_letter' || !fields.to || fields.to === 'protagonist' ? (normalizeISO(fields.date) || state.currentDate) : null),
     };
     state.ledger.push(ev);
     if (fields.approved) setStatus(state, ev, 'approved');

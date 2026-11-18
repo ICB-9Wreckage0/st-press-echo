@@ -21,6 +21,8 @@ export function mergeKeyed(a, b, key) {
     return [...m.values()];
 }
 import { findByName, blankOutlet, blankPerson, blankWork, blankPenname } from './data.js';
+import { PERC_TOPICS, PERC_KIND } from './perception.js';
+import { manualPerception } from './image.js';
 
 export const FORMAT_ID = 'press-echo-import';
 
@@ -41,9 +43,13 @@ export const FORMAT_SPEC = `{
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
   "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day", "shelf": "", "shelfUntil": "",
       "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
-  "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
+  "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "to": "私信的收信人：寄给主角的留空或写“主角”，别人之间的信写收信人", "knownAt": "主角哪天得知这封别人之间的信（不知道就空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
   "rumors": [{ "text": "坊间传闻", "strength": 0.5 }],
+  "privateFacts": [{ "text": "主角的私人情况或某部作品的创作意图，如：法语不是他的母语", "topic": "语言与母语", "work": "针对哪部作品（创作意图时填，否则空）", "knownBy": [{ "person": "知情者", "since": "哪天起知道", "via": "told", "believes": true }], "public": false }],
+  "selfImage": [{ "mode": "self", "topic": "文风与语言", "text": "主角怎么看自己（self），或在文章、序言、访谈里公开说过的话（claim）", "since": "哪天起", "penname": "针对哪个署名（可空）" }],
+  "assumed": [{ "person": "主角以为谁（人物名；针对整个读者圈子时改填 circle）", "circle": "", "topic": "思想倾向", "belief": "主角以为对方觉得……", "since": "哪天起" }],
+  "perceptions": [{ "person": "谁", "topic": "身份与背景", "belief": "此人对作者的一种看法（聊天里明确说出或写出的）", "kind": "inference", "date": "哪天表露的", "penname": "针对哪个署名（可空）", "evidence": "依据：原话或位置，40 字内" }],
   "eraNotes": [{ "title": "标题", "text": "与时代背景有关、后续写作要遵守的事实" }]
 }`;
 
@@ -60,13 +66,19 @@ export const FORMAT_RULES = `字段取值：
 - stylePrefs（人物读作品时在意的写法，是倾向不是规则）：aspect 如 词汇选择、句子节奏、解释密度、修辞密度、叙述距离、情绪强度、论证重复度；leaning 一句话；tolerance=1 难以容忍 / 2 视情况 / 3 宽容。不要用他自己的文风反推
 - claims（作品在议题上的主张）：side 同上，“大体反对但保留例外”填 mixed；issue 尽量与人物 stances 用同一个词，才能对照出赞同或分歧
 - shelf（作品发表后是否长期流通、一直有人找来读）：yes / no / 留空按形式（成书、单行本、小册子算流通）；shelfUntil：售罄或绝版日期（不知道就空）
+- privateFacts（主角的私人信息与知情者）：只记聊天里明确出现的。knownBy 只写确实听过的人（亲口告诉 told / 书信 letter / 听人转述 heard / 亲眼所见 saw / 自己推断 inferred），不要因为两人相熟就推定对方也知道。topic 取：语言与母语、国籍与出身、成长经历、知识背景、创作意图、身份与笔名、健康与生活、其他
+- selfImage（主角的自我认知）：mode=self 只是主角心里怎么看自己，谁都不知道；mode=claim 是公开说过的话（文章、序言、访谈），从 since 起读者都可能知道。topic 取：${PERC_TOPICS.join('、')}
+- assumed（主角以为别人怎么看他）：只记主角明确表露过的猜想（心理描写、对别人说的话），person 和 circle 二选一，circle 取值同上面的读者圈子
+- perceptions（别人对作者的看法）：只记聊天里此人明确说出或写出的判断，不要从态度推断。kind：fact 确知（他确实被告知过）/ self_report 作者本人说的 / inference 自己推测 / rumor 听来的传闻 / misread 明显误解；拿不准就填 inference。topic 同 selfImage
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：${enumLine(FORMS)}
 - layer（反响类型）：${enumLine(LAYERS)}
 - polarity（褒贬）：1 肯定，0 褒贬参半，-1 批评
 - count：读者来信封数、剪报条数（其他类型填 null）
-- read：finished=读完，skimmed=读了一部分
+- read：finished=读完，skimmed=读了一部分，unknown=读过但不知道读了多少
+- 私信 to / knownAt：主角只知道寄给他本人的信；别人之间的信，只有写明主角哪天得知（knownAt），之后才算主角知道
+- outlets.issueDates：不定期刊物已知的出刊日期（YYYY-MM-DD 列表），不知道就空
 规则：
 1. 只记录聊天里明确发生过、明确写出的事，不推测、不补全常识；拿不准的字段留空或省略。
 2. reactions 只收“已经发生”的：已见报的书评/短评/八卦/论战、已寄到的私信、读者来信、剪报。计划中、传言中的不算，可以写进 rumors。
@@ -166,6 +178,7 @@ export function normalizeBundle(obj) {
             monthDays: arr(o.monthDays).map(Number).filter(n => n >= 1 && n <= 31),
             circle: enumKey(CIRCLES, o.circle, ''),
             tier: num(o.tier), politics: arr(o.politics).map(str), real: o.real !== false, note: str(o.note),
+            issueDates: arr(o.issueDates).map(date).filter(Boolean),
         })),
         persons: arr(b.persons).map(p => (typeof p === 'string' ? { name: p } : p)).filter(p => str(p.name)).map(p => ({
             name: str(p.name), aliases: arr(p.aliases).map(str),
@@ -196,7 +209,17 @@ export function normalizeBundle(obj) {
         })),
         reactions: [], readings: [],
         rumors: arr(b.rumors).map(r => (typeof r === 'string' ? { text: r } : r)).filter(r => str(r.text)).map(r => ({ text: str(r.text), strength: Math.max(0, Math.min(1, num(r.strength, 0.5))) })),
+        privateFacts: arr(b.privateFacts).map(f => (typeof f === 'string' ? { text: f } : f)).filter(f => str(f?.text)).map(f => ({
+            text: str(f.text), topic: str(f.topic) || '其他', work: bare(f.work), public: !!f.public, publicSince: date(f.publicSince),
+            knownBy: arr(f.knownBy).map(k => (typeof k === 'string' ? { person: k } : k)).filter(k => str(k?.person)).map(k => ({ person: str(k.person), since: date(k.since), via: ['told', 'letter', 'heard', 'saw', 'inferred'].includes(k.via) ? k.via : 'told', believes: k.believes !== false })),
+        })),
         eraNotes: arr(b.eraNotes).map(n => (typeof n === 'string' ? { text: n } : n)).filter(n => str(n.text)).map(n => ({ title: str(n.title), text: str(n.text) })),
+        selfImage: arr(b.selfImage).map(x => (typeof x === 'string' ? { text: x } : x)).filter(x => str(x?.text)).map(x => ({
+            mode: x.mode === 'claim' ? 'claim' : 'self', topic: PERC_TOPICS.includes(str(x.topic)) ? str(x.topic) : '其他', text: str(x.text), since: date(x.since), penname: str(x.penname) })),
+        assumed: arr(b.assumed).filter(x => str(x?.belief) && (str(x.person) || str(x.circle))).map(x => ({
+            person: str(x.person), circle: str(x.person) ? '' : enumKey(CIRCLES, x.circle, ''), topic: PERC_TOPICS.includes(str(x.topic)) ? str(x.topic) : '其他', belief: str(x.belief), since: date(x.since), penname: str(x.penname) })),
+        perceptions: arr(b.perceptions).filter(x => str(x?.belief) && str(x.person)).map(x => ({
+            person: str(x.person), topic: PERC_TOPICS.includes(str(x.topic)) ? str(x.topic) : '其他', belief: str(x.belief), kind: PERC_KIND[x.kind] ? x.kind : 'inference', date: date(x.date), penname: str(x.penname), evidence: str(x.evidence) })),
         warnings: warn,
     };
     for (const r of arr(b.reactions || b.confirmedReactions)) {
@@ -206,19 +229,20 @@ export function normalizeBundle(obj) {
             date: d, layer: enumKey(LAYERS, r.layer, 'notice'), person: str(r.person), outlet: bare(r.outlet || r.outletName), work: bare(r.work),
             polarity: [1, 0, -1].includes(num(r.polarity)) ? num(r.polarity) : 0, count: num(r.count),
             title: str(r.title), summary: str(r.summary), evidence: str(r.evidence), datePrecision: precKey(r.datePrecision),
+            to: str(r.to || r.recipient), knownAt: date(r.knownAt),
         });
     }
     for (const r of arr(b.readings)) {
         const d = date(r.date);
         if (!d || !str(r.person) || !str(r.work)) { warn.push(`阅读记录缺日期/人物/作品，已跳过：${str(r.person)} ${str(r.work)}`); continue; }
-        out.readings.push({ date: d, person: str(r.person), work: bare(r.work), read: r.read === 'skimmed' ? 'skimmed' : 'finished', note: str(r.note) });
+        out.readings.push({ date: d, person: str(r.person), work: bare(r.work), read: ['skimmed', 'finished', 'unknown'].includes(r.read) ? r.read : 'unknown', note: str(r.note) });
     }
     return out;
 }
 
 // ———————————— 合并多份整理包（分块抽取或分几次输出） ————————————
 
-const keyOf = { pennames: x => x.name, outlets: x => x.name, persons: x => x.name, works: x => x.title, rumors: x => x.text, eraNotes: x => x.title + x.text,
+const keyOf = { selfImage: x => x.mode + x.text, assumed: x => (x.person || x.circle) + x.belief, perceptions: x => x.person + x.belief, privateFacts: x => x.text, pennames: x => x.name, outlets: x => x.name, persons: x => x.name, works: x => x.title, rumors: x => x.text, eraNotes: x => x.title + x.text,
     reactions: x => `${x.date}|${x.layer}|${x.person}|${x.work}|${x.outlet}|${x.title}|${x.polarity}`, readings: x => `${x.person}|${x.work}` };
 const sameName = (a, b) => { const n = s => String(s || '').replace(/[\s·・.《》]/g, '').toLowerCase(); return n(a) && n(a) === n(b); };
 
@@ -236,6 +260,7 @@ export function mergeBundles(a, b) {
             if (nameField && item[nameField] && item[nameField] !== ex[nameField] && 'aliases' in ex) ex.aliases = [...new Set([...(ex.aliases || []), item[nameField]])];
             for (const [f, v] of Object.entries(item)) {
                 if (f === nameField) continue; // 名字以先出现的为准，后来的写法记作别名
+                if (f === 'knownBy') { const m = new Map((ex.knownBy || []).map(k => [k.person, k])); for (const k of v) m.set(k.person, { ...(m.get(k.person) || {}), ...k }); ex.knownBy = [...m.values()]; continue; }
                 if (f === 'relations') { const m = new Map((ex.relations || []).map(r => [r.to, r])); for (const r of v) m.set(r.to, { ...(m.get(r.to) || {}), ...r }); ex.relations = [...m.values()]; continue; }
                 if (KEYED[f]) { ex[f] = mergeKeyed(ex[f], v, KEYED[f]); continue; }
                 if (f === 'rolesGiven') { ex[f] = !!(ex[f] || v); continue; }
@@ -290,6 +315,13 @@ export function previewBundle(state, b) {
     pv.counts.readings = { new: b.readings.length, update: 0 };
     pv.counts.rumors = { new: b.rumors.length, update: 0 };
     pv.counts.eraNotes = { new: b.eraNotes.length, update: 0 };
+    pv.items.privateFacts = (b.privateFacts || []).map(f => ({ name: `${f.text}${f.knownBy?.length ? '（知情：' + f.knownBy.map(k => k.person).join('、') + '）' : ''}`, exists: (state.privateFacts || []).some(x => String(x.text).replace(/\s/g, '') === String(f.text).replace(/\s/g, '')) }));
+    pv.counts.privateFacts = { new: pv.items.privateFacts.filter(x => !x.exists).length, update: pv.items.privateFacts.filter(x => x.exists).length };
+    const nz = t => String(t || '').replace(/[\s，。、；：“”（）,.;:]/g, '');
+    pv.items.selfImage = (b.selfImage || []).map(x => ({ name: `${x.mode === 'claim' ? '对外说法' : '主角自认'}：${x.text}`, exists: (state.selfImage || []).some(y => y.mode === x.mode && nz(y.text) === nz(x.text)) }));
+    pv.items.assumed = (b.assumed || []).map(x => ({ name: `以为${x.person || CIRCLES[x.circle] || ''}觉得：${x.belief}`, exists: (state.assumed || []).some(y => nz(y.belief) === nz(x.belief)) }));
+    pv.items.perceptions = (b.perceptions || []).map(x => ({ name: `${x.person}：${x.belief}（${PERC_KIND[x.kind]}）`, exists: (state.perceptions || []).some(y => nz(y.belief) === nz(x.belief) && findPerson(state, x.person)?.id === y.observerId) }));
+    for (const k of ['selfImage', 'assumed', 'perceptions']) pv.counts[k] = { new: pv.items[k].filter(x => !x.exists).length, update: 0 };
     // 引用了整理包和现有数据里都没有的名字
     const has = (k, n) => !n || b[k].some(x => sameName(x.name || x.title, n) || (x.aliases || []).some(a => sameName(a, n)))
         || (k === 'outlets' ? findByName(state.outlets, n) : k === 'persons' ? findPerson(state, n) : findWork(state, n));
@@ -308,6 +340,15 @@ export function previewBundle(state, b) {
     pv.stale = staleImported(state, b).map(e => `${e.date} ${LAYERS[e.layer]?.label || e.layer} ${state.persons.find(p => p.id === e.personId)?.name || e.personName || ''}${e.workId ? ' 《' + (state.works.find(w => w.id === e.workId)?.title || '') + '》' : ''}${e.count ? ` 约${e.count}` : ''}`);
     if (b.storyDate && state.currentDate && cmp(b.storyDate, state.currentDate) < 0) pv.warnings.push(`整理包的日期 ${b.storyDate} 早于当前故事日期 ${state.currentDate}，不会把日期往回调`);
     return pv;
+}
+
+/** 私信的收信人：空、“主角”、主角的名字或笔名 → 主角；否则是别人之间的信，主角要等 knownAt 才知道 */
+function recipientOf(state, r) {
+    if (r.layer !== 'private_letter') return {};
+    const me = new Set(['', '主角', '我', ...(state.pennames || []).flatMap(p => [p.owner, p.name]).filter(Boolean)].map(x => String(x).replace(/\s/g, '')));
+    const to = String(r.to || '').replace(/\s/g, '');
+    if (me.has(to)) return { to: 'protagonist', knownAt: r.knownAt || r.date };
+    return { to: r.to, knownAt: r.knownAt || null };
 }
 
 function ensureOutlet(state, name, report) {
@@ -356,7 +397,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
 
     if (on('outlets')) for (const o of b.outlets) {
         const ex = findByName(state.outlets, o.name) || (o.originalName && findByName(state.outlets, o.originalName));
-        const data = { name: o.name, periodicity: o.periodicity, weekday: o.weekday, monthDays: o.monthDays, circle: o.circle, tier: o.tier, politics: o.politics, note: [o.originalName, o.note].filter(Boolean).join('；') };
+        const data = { name: o.name, originalName: o.originalName, periodicity: o.periodicity, weekday: o.weekday, monthDays: o.monthDays, circle: o.circle, tier: o.tier, politics: o.politics, issueDates: o.issueDates, note: [o.originalName, o.note].filter(Boolean).join('；') };
         if (ex) { const n = ex.name; fill(ex, data, sync); ex.name = n; ex.real = o.real; } else state.outlets.push({ ...blankOutlet(), ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== '' && v != null)), periodicity: o.periodicity || 'irregular', circle: o.circle || 'general', tier: o.tier || 3, real: o.real });
     }
     if (on('persons')) for (const p of b.persons) {
@@ -415,6 +456,48 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
         report.lines.push(`故事日期：${state.currentDate || '（未设定）'} → ${b.storyDate}`);
         state.currentDate = b.storyDate;
     }
+    if (on('privateFacts')) for (const f of b.privateFacts || []) {
+        state.privateFacts = state.privateFacts || [];
+        const n = t => String(t || '').replace(/[\s，。、；：“”（）,.;:]/g, '');
+        let ex = state.privateFacts.find(x => n(x.text) === n(f.text));
+        if (!ex) { ex = { id: uid('pf'), topic: f.topic, text: f.text, workId: '', public: false, publicSince: '', secret: '', knownBy: [] }; state.privateFacts.push(ex); }
+        ex.topic = f.topic || ex.topic;
+        if (f.work) ex.workId = findWork(state, f.work)?.id || ex.workId;
+        if (f.public) { ex.public = true; ex.publicSince = f.publicSince || ex.publicSince; }
+        const kb = sync ? [] : [...(ex.knownBy || [])];
+        for (const k of f.knownBy) {
+            const q = findPerson(state, k.person);
+            if (!q) { report.skipped.push(`私人信息的知情者“${k.person}”不在人物表里`); continue; }
+            const i = kb.findIndex(x => x.personId === q.id);
+            const row = { personId: q.id, since: k.since, via: k.via, believes: k.believes };
+            if (i >= 0) kb[i] = { ...kb[i], ...row }; else kb.push(row);
+        }
+        ex.knownBy = kb;
+    }
+    const nz = t => String(t || '').replace(/[\s，。、；：“”（）,.;:]/g, '');
+    const penOf = name => (name ? findByName(state.pennames, name)?.id : '') || '';
+    if (on('selfImage')) for (const x of b.selfImage || []) {
+        state.selfImage = state.selfImage || [];
+        if (state.selfImage.some(y => y.mode === x.mode && nz(y.text) === nz(x.text))) continue;
+        state.selfImage.push({ id: uid('si'), mode: x.mode, topic: x.topic, text: x.text, since: x.since || '', pennameId: penOf(x.penname) });
+        report.created.push(`${x.mode === 'claim' ? '对外说法' : '主角自认'}“${x.text.slice(0, 20)}”`);
+    }
+    if (on('assumed')) for (const x of b.assumed || []) {
+        state.assumed = state.assumed || [];
+        const q = x.person ? findPerson(state, x.person) : null;
+        if (x.person && !q) { report.skipped.push(`“主角以为”里的人物“${x.person}”不在人物表里`); continue; }
+        if (state.assumed.some(y => nz(y.belief) === nz(x.belief) && (y.personId || '') === (q?.id || '') && (y.circle || '') === (x.circle || ''))) continue;
+        state.assumed.push({ id: uid('as'), personId: q?.id || '', circle: q ? '' : x.circle, topic: x.topic, belief: x.belief, since: x.since || '', pennameId: penOf(x.penname) });
+        report.created.push(`主角以为“${x.belief.slice(0, 20)}”`);
+    }
+    if (on('perceptions')) for (const x of b.perceptions || []) {
+        const q = findPerson(state, x.person);
+        if (!q) { report.skipped.push(`看法的主人“${x.person}”不在人物表里`); continue; }
+        if ((state.perceptions || []).some(y => y.observerId === q.id && nz(y.belief) === nz(x.belief))) continue;
+        const p = manualPerception(state, { personId: q.id, topic: x.topic, belief: x.belief, kind: x.kind, date: x.date || state.currentDate || '', pennameId: penOf(x.penname) });
+        p.origin = 'bundle'; p.evidence = x.evidence.slice(0, 120);
+        report.created.push(`${q.name} 的看法“${x.belief.slice(0, 20)}”${p.kind !== x.kind ? `（标为${PERC_KIND[x.kind]}，但对不上他知道的事，改为${PERC_KIND[p.kind]}）` : ''}`);
+    }
     if (on('reactions')) for (const r of b.reactions) {
         const person = r.person ? (findPerson(state, r.person) || (['reader_letters', 'mentions'].includes(r.layer) ? null : ensurePerson(state, r.person, report))) : null;
         const work = r.work ? findWork(state, r.work) : null;
@@ -431,6 +514,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
             polarity: r.polarity, count: r.count ?? undefined, status: 'candidate',
             text: r.summary || r.title ? { title: r.title, summary: r.summary, body: '', byline: '', section: '' } : null,
             datePrecision: r.datePrecision || undefined,
+            ...recipientOf(state, r),
             flags: ['来自整理包：已发生'], why: r.evidence ? [`依据：${r.evidence}`] : [], repApplied: null,
         };
         state.ledger.push(ev);
@@ -443,7 +527,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
             if (!r.person || !r.work || ['reader_letters', 'mentions'].includes(r.layer)) continue;
             const has = b.readings.some(x => sameName(x.person, r.person) && sameName(x.work, r.work))
                 || inferred.some(x => sameName(x.person, r.person) && sameName(x.work, r.work));
-            if (!has) inferred.push({ date: r.date, person: r.person, work: r.work, read: 'finished', note: `由${LAYERS[r.layer]?.label || '反响'}推断（${r.date}）`, known: { polarity: r.polarity, source: LAYERS[r.layer]?.label } });
+            if (!has) inferred.push({ date: r.date, person: r.person, work: r.work, read: 'unknown', note: `由${LAYERS[r.layer]?.label || '反响'}推断接触过（${r.date}），读了多少不详`, known: { polarity: r.polarity, source: LAYERS[r.layer]?.label } });
         }
         if (inferred.length) report.lines.push(`由署名反响补了 ${inferred.length} 条阅读记录：${inferred.map(x => `${x.person}读${x.work}`).join('、')}`);
     }

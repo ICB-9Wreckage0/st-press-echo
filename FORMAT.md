@@ -18,9 +18,13 @@
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
   "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day", "shelf": "", "shelfUntil": "",
       "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
-  "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
+  "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "to": "私信的收信人：寄给主角的留空或写“主角”，别人之间的信写收信人", "knownAt": "主角哪天得知这封别人之间的信（不知道就空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
   "rumors": [{ "text": "坊间传闻", "strength": 0.5 }],
+  "privateFacts": [{ "text": "主角的私人情况或某部作品的创作意图，如：法语不是他的母语", "topic": "语言与母语", "work": "针对哪部作品（创作意图时填，否则空）", "knownBy": [{ "person": "知情者", "since": "哪天起知道", "via": "told", "believes": true }], "public": false }],
+  "selfImage": [{ "mode": "self", "topic": "文风与语言", "text": "主角怎么看自己（self），或在文章、序言、访谈里公开说过的话（claim）", "since": "哪天起", "penname": "针对哪个署名（可空）" }],
+  "assumed": [{ "person": "主角以为谁（人物名；针对整个读者圈子时改填 circle）", "circle": "", "topic": "思想倾向", "belief": "主角以为对方觉得……", "since": "哪天起" }],
+  "perceptions": [{ "person": "谁", "topic": "身份与背景", "belief": "此人对作者的一种看法（聊天里明确说出或写出的）", "kind": "inference", "date": "哪天表露的", "penname": "针对哪个署名（可空）", "evidence": "依据：原话或位置，40 字内" }],
   "eraNotes": [{ "title": "标题", "text": "与时代背景有关、后续写作要遵守的事实" }]
 }
 ```
@@ -38,13 +42,19 @@
 - stylePrefs（人物读作品时在意的写法，是倾向不是规则）：aspect 如 词汇选择、句子节奏、解释密度、修辞密度、叙述距离、情绪强度、论证重复度；leaning 一句话；tolerance=1 难以容忍 / 2 视情况 / 3 宽容。不要用他自己的文风反推
 - claims（作品在议题上的主张）：side 同上，“大体反对但保留例外”填 mixed；issue 尽量与人物 stances 用同一个词，才能对照出赞同或分歧
 - shelf（作品发表后是否长期流通、一直有人找来读）：yes / no / 留空按形式（成书、单行本、小册子算流通）；shelfUntil：售罄或绝版日期（不知道就空）
+- privateFacts（主角的私人信息与知情者）：只记聊天里明确出现的。knownBy 只写确实听过的人（亲口告诉 told / 书信 letter / 听人转述 heard / 亲眼所见 saw / 自己推断 inferred），不要因为两人相熟就推定对方也知道。topic 取：语言与母语、国籍与出身、成长经历、知识背景、创作意图、身份与笔名、健康与生活、其他
+- selfImage（主角的自我认知）：mode=self 只是主角心里怎么看自己，谁都不知道；mode=claim 是公开说过的话（文章、序言、访谈），从 since 起读者都可能知道。topic 取：文风与语言、思想倾向、论证方式、知识背景、创作动机、公开回应与论战、身份与背景、名气与影响、能力与潜力、其他
+- assumed（主角以为别人怎么看他）：只记主角明确表露过的猜想（心理描写、对别人说的话），person 和 circle 二选一，circle 取值同上面的读者圈子
+- perceptions（别人对作者的看法）：只记聊天里此人明确说出或写出的判断，不要从态度推断。kind：fact 确知（他确实被告知过）/ self_report 作者本人说的 / inference 自己推测 / rumor 听来的传闻 / misread 明显误解；拿不准就填 inference。topic 同 selfImage
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：serial=报纸连载，article=单篇文章，book=成书，pamphlet=小册子/附赠本，translation_serial=译作连载，translation_book=译作单行本
 - layer（反响类型）：review=正式书评，polemic=论战文章，notice=书讯/短评，echo=短讯/八卦，private_letter=私信，reader_letters=读者来信，mentions=转载/提及（剪报）
 - polarity（褒贬）：1 肯定，0 褒贬参半，-1 批评
 - count：读者来信封数、剪报条数（其他类型填 null）
-- read：finished=读完，skimmed=读了一部分
+- read：finished=读完，skimmed=读了一部分，unknown=读过但不知道读了多少
+- 私信 to / knownAt：主角只知道寄给他本人的信；别人之间的信，只有写明主角哪天得知（knownAt），之后才算主角知道
+- outlets.issueDates：不定期刊物已知的出刊日期（YYYY-MM-DD 列表），不知道就空
 规则：
 1. 只记录聊天里明确发生过、明确写出的事，不推测、不补全常识；拿不准的字段留空或省略。
 2. reactions 只收“已经发生”的：已见报的书评/短评/八卦/论战、已寄到的私信、读者来信、剪报。计划中、传言中的不算，可以写进 rumors。
@@ -72,9 +82,13 @@
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
   "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day", "shelf": "", "shelfUntil": "",
       "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
-  "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
+  "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "to": "私信的收信人：寄给主角的留空或写“主角”，别人之间的信写收信人", "knownAt": "主角哪天得知这封别人之间的信（不知道就空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
   "rumors": [{ "text": "坊间传闻", "strength": 0.5 }],
+  "privateFacts": [{ "text": "主角的私人情况或某部作品的创作意图，如：法语不是他的母语", "topic": "语言与母语", "work": "针对哪部作品（创作意图时填，否则空）", "knownBy": [{ "person": "知情者", "since": "哪天起知道", "via": "told", "believes": true }], "public": false }],
+  "selfImage": [{ "mode": "self", "topic": "文风与语言", "text": "主角怎么看自己（self），或在文章、序言、访谈里公开说过的话（claim）", "since": "哪天起", "penname": "针对哪个署名（可空）" }],
+  "assumed": [{ "person": "主角以为谁（人物名；针对整个读者圈子时改填 circle）", "circle": "", "topic": "思想倾向", "belief": "主角以为对方觉得……", "since": "哪天起" }],
+  "perceptions": [{ "person": "谁", "topic": "身份与背景", "belief": "此人对作者的一种看法（聊天里明确说出或写出的）", "kind": "inference", "date": "哪天表露的", "penname": "针对哪个署名（可空）", "evidence": "依据：原话或位置，40 字内" }],
   "eraNotes": [{ "title": "标题", "text": "与时代背景有关、后续写作要遵守的事实" }]
 }
 
@@ -91,13 +105,19 @@
 - stylePrefs（人物读作品时在意的写法，是倾向不是规则）：aspect 如 词汇选择、句子节奏、解释密度、修辞密度、叙述距离、情绪强度、论证重复度；leaning 一句话；tolerance=1 难以容忍 / 2 视情况 / 3 宽容。不要用他自己的文风反推
 - claims（作品在议题上的主张）：side 同上，“大体反对但保留例外”填 mixed；issue 尽量与人物 stances 用同一个词，才能对照出赞同或分歧
 - shelf（作品发表后是否长期流通、一直有人找来读）：yes / no / 留空按形式（成书、单行本、小册子算流通）；shelfUntil：售罄或绝版日期（不知道就空）
+- privateFacts（主角的私人信息与知情者）：只记聊天里明确出现的。knownBy 只写确实听过的人（亲口告诉 told / 书信 letter / 听人转述 heard / 亲眼所见 saw / 自己推断 inferred），不要因为两人相熟就推定对方也知道。topic 取：语言与母语、国籍与出身、成长经历、知识背景、创作意图、身份与笔名、健康与生活、其他
+- selfImage（主角的自我认知）：mode=self 只是主角心里怎么看自己，谁都不知道；mode=claim 是公开说过的话（文章、序言、访谈），从 since 起读者都可能知道。topic 取：文风与语言、思想倾向、论证方式、知识背景、创作动机、公开回应与论战、身份与背景、名气与影响、能力与潜力、其他
+- assumed（主角以为别人怎么看他）：只记主角明确表露过的猜想（心理描写、对别人说的话），person 和 circle 二选一，circle 取值同上面的读者圈子
+- perceptions（别人对作者的看法）：只记聊天里此人明确说出或写出的判断，不要从态度推断。kind：fact 确知（他确实被告知过）/ self_report 作者本人说的 / inference 自己推测 / rumor 听来的传闻 / misread 明显误解；拿不准就填 inference。topic 同 selfImage
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：serial=报纸连载，article=单篇文章，book=成书，pamphlet=小册子/附赠本，translation_serial=译作连载，translation_book=译作单行本
 - layer（反响类型）：review=正式书评，polemic=论战文章，notice=书讯/短评，echo=短讯/八卦，private_letter=私信，reader_letters=读者来信，mentions=转载/提及（剪报）
 - polarity（褒贬）：1 肯定，0 褒贬参半，-1 批评
 - count：读者来信封数、剪报条数（其他类型填 null）
-- read：finished=读完，skimmed=读了一部分
+- read：finished=读完，skimmed=读了一部分，unknown=读过但不知道读了多少
+- 私信 to / knownAt：主角只知道寄给他本人的信；别人之间的信，只有写明主角哪天得知（knownAt），之后才算主角知道
+- outlets.issueDates：不定期刊物已知的出刊日期（YYYY-MM-DD 列表），不知道就空
 规则：
 1. 只记录聊天里明确发生过、明确写出的事，不推测、不补全常识；拿不准的字段留空或省略。
 2. reactions 只收“已经发生”的：已见报的书评/短评/八卦/论战、已寄到的私信、读者来信、剪报。计划中、传言中的不算，可以写进 rumors。

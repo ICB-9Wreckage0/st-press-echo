@@ -174,10 +174,11 @@ const PROFILE_SCHEMA = `{
   "vocabulary": ["时代用语、称谓、机构名"],
   "forbiddenAnachronisms": ["此时尚不存在、写进去就会穿帮的事物或说法"],
   "seasonFactors": {"1":1,"2":1,"3":1,"4":1,"5":1,"6":1,"7":0.8,"8":0.55,"9":0.85,"10":1,"11":1,"12":0.9},
-  "uncertain": ["你不确定、需要用户核对的条目"]
+  "uncertain": ["你不确定、需要用户核对的条目"],
+  "periodNews": [{"date": "YYYY-MM-DD", "kind": "出版物 | 报刊 | 文坛 | 社会", "text": "本期新出现的事"}]
 }`;
 
-export async function buildEraProfile({ year, currentIso, placeLabel, sources, notes, settings }) {
+export async function buildEraProfile({ year, currentIso, placeLabel, sources, notes, settings, focus = null, prev = null }) {
     const srcText = (sources || [])
         .filter(s => s.text)
         .map(s => `【维基百科 ${s.lang}：${s.title}】\n${s.text}`)
@@ -190,18 +191,22 @@ export async function buildEraProfile({ year, currentIso, placeLabel, sources, n
 2. 报刊、评论家必须是该时该地真实存在且正在活动的；拿不准的放进 "uncertain"，不要编造。
 3. 优先依据下面提供的资料；资料没有覆盖的，用你的历史知识补充，但要更保守。
 4. 描述用${settings.outputLanguage || '中文'}，专名保留原文并附译名。
-5. 只输出一个 JSON 对象，结构如下：
+${focus ? `6. 这是${focus.label}的档案：特别写出这段时间（${focus.from} 至 ${currentIso}）里新出版的书刊、创刊或停刊的报刊、文坛和思想界的事件、引起报刊议论的社会大事，写进 periodNews，每条带具体日期；同时更新 recentEvents 和 seasonFactors。` : ''}
+${prev ? '7. 上一期档案的要点附在后面：仍然成立的保留，已经过时的改掉；不要无故改变报刊和评论家的描述。' : ''}
+只输出一个 JSON 对象，结构如下：
 ${PROFILE_SCHEMA}`;
     const user = `当前故事日期：${currentIso || year}
 地点：${placeLabel || '未指定'}
 
 ${srcText ? '参考资料（已剪掉当前日期之后的条目，但仍可能有遗漏，请再自行把关）：\n' + srcText : '（没有可用的检索资料，请仅凭历史知识保守编写）'}
 
-${noteText ? '用户收集的笔记：\n' + noteText : ''}`;
+${noteText ? '用户收集的笔记：\n' + noteText : ''}
+${prev ? `\n上一期档案（截至 ${prev.asOf || ''}）的要点：\n${JSON.stringify({ summary: prev.summary, pressLandscape: (prev.pressLandscape || []).map(x => x.nameZh || x.name), critics: (prev.critics || []).map(x => x.nameZh || x.name), recentEvents: prev.recentEvents }).slice(0, 3000)}` : ''}`;
     const raw = await callLLM({ system, user, settings, maxTokens: 3500, label: `生成 ${currentIso || year} 年代档案` });
     const profile = extractJSON(raw);
     profile.year = profile.year || year;
     profile.asOf = currentIso;
+    if (focus) profile.period = focus.key;
     profile.sources = (sources || []).filter(s => s.text).map(s => `${s.lang}:${s.title}`);
     profile.generatedAt = new Date().toISOString();
     return profile;
@@ -253,4 +258,32 @@ export function eraBrief(era, maxLen = 1400) {
     if (era.vocabulary?.length) parts.push(`时代用语：${era.vocabulary.slice(0, 20).join('、')}`);
     if (era.forbiddenAnachronisms?.length) parts.push(`禁止出现（此时尚不存在）：${era.forbiddenAnachronisms.slice(0, 30).join('、')}`);
     return truncate(parts.join('\n'), maxLen);
+}
+
+// ———————————— 按季度 / 按月刷新 ————————————
+/** 某天属于哪一期：quarter → 1890-Q3；month → 1890-07 */
+export function periodKey(date, mode = 'quarter') {
+    if (!date) return '';
+    const y = date.slice(0, 4), m = +date.slice(5, 7);
+    return mode === 'month' ? `${y}-${String(m).padStart(2, '0')}` : `${y}-Q${Math.ceil(m / 3)}`;
+}
+export function periodLabel(key) {
+    const m = key.match(/^(\d{4})-Q(\d)$/);
+    if (m) return `${m[1]} 年第${'一二三四'[+m[2] - 1]}季度（${(+m[2] - 1) * 3 + 1}–${+m[2] * 3} 月）`;
+    const n = key.match(/^(\d{4})-(\d{2})$/);
+    return n ? `${n[1]} 年 ${+n[2]} 月` : key;
+}
+/** 这一期从哪天开始 */
+export function periodStart(key) {
+    const m = key.match(/^(\d{4})-Q(\d)$/);
+    if (m) return `${m[1]}-${String((+m[2] - 1) * 3 + 1).padStart(2, '0')}-01`;
+    return `${key}-01`;
+}
+/** 年代档案该不该刷新：故事进入了档案生成之后的新一期 */
+export function eraDue(profile, currentDate, mode) {
+    if (!profile || !currentDate || !mode || mode === 'off') return null;
+    const asOf = profile.asOf || `${profile.year}-01-01`;
+    const now = periodKey(currentDate, mode);
+    if (now === periodKey(asOf, mode) || currentDate <= asOf) return null;
+    return { key: now, label: periodLabel(now), from: periodStart(now), asOf };
 }

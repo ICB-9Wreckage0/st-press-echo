@@ -718,3 +718,81 @@ span.pe-pol:not(.pe-chip) { font-size: .9em; padding: 0 4px; border: 1px solid; 
 .pe-sg-low { border-left-color: var(--pe-bad); }
 .pe-sg .pe-card-main > div { margin-top: 3px; line-height: 1.5; }
 .pe-sg-low .pe-sg-conf { color: var(--pe-bad); }
+
+/* ---------- 时间线 ---------- */
+.pe-tl-wrap, .pe-nw-wrap { border: 1px solid var(--pe-border); border-radius: 10px; padding: 6px; margin: 8px 0 12px; overflow-x: auto; }
+.pe-tl { width: 100%; min-width: 640px; height: auto; display: block; font-size: 11px; }
+.pe-tl-lane { fill: transparent; } .pe-tl-lane.odd { fill: color-mix(in srgb, var(--pe-fg) 4%, transparent); }
+.pe-tl-lab { fill: var(--pe-fg); opacity: .8; font-size: 12px; }
+.pe-tl-axis { fill: var(--pe-fg); opacity: .55; font-size: 11px; }
+.pe-tl-grid { stroke: var(--pe-border); stroke-width: 1; }
+.pe-tl-pub { stroke: var(--pe-accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.pe-tl-cum { fill: none; stroke: var(--pe-accent); stroke-width: 2; }
+.pe-tl-m { cursor: default; } .pe-tl-m:hover { stroke-width: 3; }
+.pe-tl-tick { stroke: var(--pe-fg); stroke-width: 2; opacity: .35; }
+.pe-tl-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: .88em; margin: 4px 0; }
+.pe-tl-legend > span, .pe-nw-key { display: inline-flex; align-items: center; gap: 5px; }
+.pe-tl-legend i.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.pe-tl-legend i.dot.hollow { border: 2px solid var(--pe-mid); background: transparent; box-sizing: border-box; }
+.pe-tl-legend i.dot.ring { border: 2px solid var(--pe-accent); background: transparent; box-sizing: border-box; width: 13px; height: 13px; }
+.pe-tl-legend i.tick { width: 2px; height: 11px; background: var(--pe-fg); opacity: .4; display: inline-block; }
+.pe-tl-legend i.dia { width: 8px; height: 8px; background: #8fa8d8; transform: rotate(45deg); display: inline-block; }
+.pe-tl-table > div { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px dashed var(--pe-border); font-size: .92em; }
+.pe-tip { position: absolute; z-index: 30; max-width: 280px; padding: 6px 9px; border-radius: 6px; background: color-mix(in srgb, #000 82%, var(--pe-bg)); border: 1px solid var(--pe-border); font-size: 12px; line-height: 1.5; white-space: pre-line; pointer-events: none; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+.pe-tip[hidden] { display: none; }
+/* ---------- 关系网 ---------- */
+.pe-nw { width: 100%; min-width: 640px; height: auto; display: block; user-select: none; touch-action: none; }
+.pe-nw-e { stroke: var(--pe-fg); opacity: .35; }
+.pe-nw-rel { stroke: var(--pe-fg); opacity: .4; }
+.pe-nw-rel.fam { stroke-dasharray: 1 0; opacity: .6; }
+.pe-nw-close { opacity: .55; }
+.pe-nw-talk { stroke: var(--pe-accent); stroke-dasharray: 5 4; opacity: .75; }
+.pe-nw-leak { stroke: var(--pe-bad); stroke-dasharray: 2 3; opacity: .9; }
+.pe-nw-n { cursor: grab; }
+.pe-nw-n circle { stroke: var(--pe-bg); stroke-width: 2; }
+.pe-nw-n.me circle { fill: var(--pe-accent); }
+.pe-nw-n .pe-nw-knows { fill: none; stroke: var(--pe-accent); stroke-width: 1.8; }
+.pe-nw-n text { fill: var(--pe-fg); font-size: 12px; paint-order: stroke; stroke: var(--pe-bg); stroke-width: 3px; }
+.pe-nw.focus .pe-nw-e { opacity: .06; } .pe-nw.focus .pe-nw-e.hi { opacity: .95; }
+.pe-nw.focus .pe-nw-n { opacity: .25; } .pe-nw.focus .pe-nw-n.hi { opacity: 1; }
+.pe-nw-key i { width: 18px; height: 0; border-top: 2px solid var(--pe-fg); display: inline-block; opacity: .6; }
+.k-close i { border-top-color: #7fc48f; border-top-width: 3px; } .k-talk i { border-top: 2px dashed var(--pe-accent); opacity: 1; } .k-leak i { border-top: 2px dotted var(--pe-bad); opacity: 1; }
+.pe-seg { display: inline-flex; border: 1px solid var(--pe-border); border-radius: 8px; overflow: hidden; }
+.pe-body .pe-seg .menu_button { margin: 0; border: none; border-radius: 0; padding: 4px 10px; }
+.pe-body .pe-seg .menu_button.on { background: var(--pe-accent); color: #1f1e1d; }
+
+/* ---------- 私人信息与认知 ---------- */
+.pe-kb-row { display: grid; grid-template-columns: minmax(8em, 1.2fr) 8em 7em auto auto; gap: 6px; align-items: center; margin: 4px 0; }
+.pe-kb-row .text_pole { margin: 0; min-width: 0; }
+@media (max-width: 760px) { .pe-kb-row { grid-template-columns: 1fr 1fr; } }
+.pe-belief { display: inline-block; margin: 2px 6px 2px 0; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--pe-border); }
+.pe-belief small { opacity: .65; margin-left: 4px; }
+.pe-k-fact, .pe-k-self_report { border-color: color-mix(in srgb, var(--pe-good) 55%, transparent); }
+.pe-k-inference { border-style: dashed; }
+.pe-k-rumor { border-color: color-mix(in srgb, var(--pe-mid) 60%, transparent); border-style: dotted; }
+.pe-k-misread { border-color: color-mix(in srgb, var(--pe-bad) 55%, transparent); }
+
+/* 认知对照 */
+.pe-pc-row { display: block; padding: 8px 12px; }
+.pe-pc-row.pe-pc-conflict { border-left: 3px solid var(--pe-accent); }
+.pe-pc-topic { font-weight: 600; margin-bottom: 4px; }
+.pe-pc-line { display: grid; grid-template-columns: 8.5em 1fr; gap: 8px; padding: 3px 0; border-top: 1px dashed var(--pe-border); align-items: start; }
+.pe-pc-line:first-of-type { border-top: 0; }
+.pe-pc-lab { font-size: .88em; opacity: .75; padding-top: 2px; overflow: hidden; text-overflow: ellipsis; }
+.pe-pc-val { position: relative; padding-right: 26px; }
+.pe-pc-self .pe-pc-lab { color: var(--pe-accent); opacity: 1; }
+.pe-pc-pub .pe-pc-lab { color: #8fa8d8; opacity: 1; }
+.pe-pc-hot { background: rgba(214, 140, 60, .07); }
+.pe-pc-flag { display: inline-block; margin: 2px 6px 0 0; font-size: .82em; padding: 0 7px; border-radius: 9px; border: 1px solid rgba(214, 140, 60, .6); color: #d9a066; }
+.pe-pc-review .pe-pc-lab { color: #c9a0dc; opacity: 1; }
+.pe-sev-3 .pe-pc-val { font-weight: 600; }
+.pe-pc-del { position: absolute; right: 0; top: 0; opacity: .35; }
+.pe-pc-line:hover .pe-pc-del { opacity: 1; }
+.pe-pc-older summary { font-size: .82em; opacity: .65; cursor: pointer; }
+.pe-pc-form { flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+.pe-pc-form select, .pe-pc-form input { width: auto; flex: 0 0 auto; margin: 0; }
+.pe-pc-form .pe-grow { flex: 1 1 16em; }
+.pe-pc-date { width: 8.5em !important; }
+.pe-pc-item { gap: 6px; padding: 3px 0; align-items: center; }
+.pe-chip-warn { border-color: rgba(214, 140, 60, .7); color: #d9a066; }
+.pe-pc-form > .pe-primary { margin-left: auto; }

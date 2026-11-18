@@ -3,8 +3,10 @@
 // 看法：只在需要露面时才生成（点击“生成看法”或写稿前自动补），不为每次阅读都调用模型。
 
 import { callLLM } from './llm.js';
+import { srcOf, loadSources } from './sources.js';
+import { factLines, perceptionsOf, storePerceptions, claimsVisible, PERC_TOPICS, PERC_KIND } from './perception.js';
 import { extractJSON, truncate } from './util.js';
-import { byId, workTags, READ_STATES, STRENGTH, FORMS, SIDES, STANCE_STRENGTH, TOLERANCE, normSide, normStrength, stanceMatch, stanceText } from './engine.js';
+import { byId, workTags, READ_STATES, STRENGTH, FORMS, SIDES, STANCE_STRENGTH, TOLERANCE, normSide, normStrength, stanceMatch, stanceText, READ_DONE } from './engine.js';
 import { eraBrief } from './era.js';
 
 const CARD_SCHEMA = `{
@@ -24,8 +26,9 @@ function sampleText(src, max) {
     return `${src.slice(0, a)}\n\n［……中略……］\n\n${src.slice(mid, mid + m)}\n\n［……中略……］\n\n${src.slice(src.length - z)}`;
 }
 
-export async function buildEvidenceCard(work, settings) {
-    const src = String(work.sourceText || '').trim();
+export async function buildEvidenceCard(work, settings, state = null) {
+    if (state) await loadSources(state);
+    const src = String(srcOf(state, work) || '').trim();
     if (src.length < 200) throw new Error('请先在作品资料里粘贴原文（至少几百字）');
     const system = `你是严谨的文本编辑。从用户提供的作品原文中提取“证据卡”，供之后模拟当时读者的反应时引用。
 规则：
@@ -66,9 +69,11 @@ function dimText(d) {
     if (!d) return '';
     return Object.entries(DIM).filter(([k]) => d[k] != null && d[k] !== '').map(([k, v]) => `${v}${d[k] > 0 ? '+' : ''}${d[k]}`).join(' ');
 }
-function historyOf(state, personId, exceptId, pennameId) {
+/** 此人在 beforeDate 之前已经形成的看法（不读“未来的记忆”：比这次阅读晚形成的看法一律不给） */
+export function historyOf(state, personId, exceptId, pennameId, beforeDate = null) {
     return (state.receptions || [])
-        .filter(r => r.personId === personId && r.id !== exceptId && r.opinion?.summary && (!pennameId || byId(state.works, r.workId)?.pennameId === pennameId))
+        .filter(r => r.personId === personId && r.id !== exceptId && r.opinion?.summary && (!pennameId || byId(state.works, r.workId)?.pennameId === pennameId)
+            && (!beforeDate || (r.readDate && r.readDate < beforeDate)))
         .sort((a, b) => String(a.readDate || '').localeCompare(String(b.readDate || '')))
         .map(r => {
             const w = byId(state.works, r.workId);
@@ -126,23 +131,47 @@ const OPINION_SCHEMA = `{
   "worthWriting": false,
   "authorView": "读完这部之后，他心中这位作者是什么样的：擅长什么、毛病在哪（40字内；可以和以前一样，也可以修正）",
   "changeFromBefore": "与他以前对该作者作品的看法相比有无变化；有变化必须指出改变了以前哪一条看法、因为这部作品的哪一点（无则空）",
-  "summary": "不超过100字：此人私下对这部作品的总体看法，思想判断与文学判断分开说"
+  "summary": "不超过100字：此人私下对这部作品的总体看法，思想判断与文学判断分开说",
+  "beliefsAboutAuthor": [{"topic": "${PERC_TOPICS.join(' | ')}", "belief": "读完之后，他认为这位作者是什么样的（一句话，具体）", "kind": "fact | self_report | inference | rumor | misread（确知/作者本人说的/推测/传闻/误解）", "confidence": "0–1：他自己有多相信", "evidence": "依据：哪段文字、哪封信、哪次谈话", "revises": "若修正了他以前的某条认知，写那一条（否则空）"}]
 }`;
 
-/** 证据是否成立：要么引用了证据卡编号，要么有原文短摘 */
-const hasEvidence = (ev, card) => {
-    const ids = new Set((Array.isArray(card?.keyPoints) ? card.keyPoints : []).map(k => String(k?.id || '').toUpperCase()).filter(Boolean));
-    return (Array.isArray(ev) ? ev : ev ? [ev] : []).some(x => {
-        if (typeof x === 'string') return /K\d+/i.test(x) ? ids.has(x.match(/K\d+/i)[0].toUpperCase()) : x.trim().length >= 4;
-        const w = String(x?.where || ''); const q = String(x?.quote || '').trim();
-        return q.length >= 4 || (/K\d+/i.test(w) && ids.has(w.match(/K\d+/i)[0].toUpperCase()));
-    });
-};
+// ———— 引文核验：引文必须真的出现在原文里（有原文时）或证据卡里（没有原文时） ————
+const normQ = t => String(t || '').replace(/[\s　"'“”‘’「」『』《》〈〉()（）,，.。;；:：!！?？、\-—–…·]/g, '').toLowerCase();
+/** 引文是否出现在原文里。允许中间用省略号跳过：每一截都要能在原文中依次找到 */
+export function quoteInText(quote, text) {
+    const parts = String(quote || '').split(/…+|\.{3,}|［中略］|\[\.\.\.\]/).map(normQ).filter(p => p.length >= 2);
+    if (!parts.length) return false;
+    const T = normQ(text);
+    let at = 0;
+    for (const p of parts) { const k = T.indexOf(p, at); if (k < 0) return false; at = k + p.length; }
+    return true;
+}
+const cardIds = card => new Set((Array.isArray(card?.keyPoints) ? card.keyPoints : []).map(k => String(k?.id || '').toUpperCase()).filter(Boolean));
+const cardQuote = (card, id) => (Array.isArray(card?.keyPoints) ? card.keyPoints : []).find(k => String(k?.id || '').toUpperCase() === id)?.quote || '';
+/**
+ * 一条证据是否成立：
+ * - 有引文：有原文就必须在原文里找得到；没有原文就必须和证据卡里的摘录对得上；
+ * - 没引文只有编号：编号必须是证据卡里真有的。
+ */
+function checkEvidence(x, card, src) {
+    const where = typeof x === 'string' ? x : String(x?.where || '');
+    const quote = typeof x === 'string' ? '' : String(x?.quote || '').trim();
+    const kid = (where.match(/K\d+/i) || [])[0]?.toUpperCase();
+    const kOk = kid && cardIds(card).has(kid);
+    if (quote.length >= 4) {
+        if (src && src.length >= 200) return quoteInText(quote, src);
+        if (kOk && cardQuote(card, kid) && quoteInText(quote, cardQuote(card, kid))) return true;
+        return quoteInText(quote, JSON.stringify(card?.keyPoints || []));
+    }
+    return !!kOk;
+}
+const hasEvidence = (ev, card, src, stat) => (Array.isArray(ev) ? ev : ev ? [ev] : []).some(x => { const ok = checkEvidence(x, card, src); if (stat) stat[ok ? 'ok' : 'bad']++; return ok; });
 const NEED_EVIDENCE = ['technique', 'argument', 'emotion', 'ideas'];
 
 /** 把模型返回的看法规整成插件使用的形状：维度分数 + 证据；没有证据的维度一律“尚未判断” */
-export function normalizeOpinion(op, card) {
+export function normalizeOpinion(op, card, src = '') {
     const dims = {}, dimInfo = {}, unjudged = [];
+    const stat = { ok: 0, bad: 0 };
     const raw = op.dimensions && typeof op.dimensions === 'object' ? op.dimensions : {};
     for (const k of Object.keys(DIM)) {
         const d = raw[k];
@@ -150,14 +179,18 @@ export function normalizeOpinion(op, card) {
         const v = Number(obj.score);
         let score = obj.score == null || obj.score === '' || isNaN(v) ? null : Math.max(-2, Math.min(2, Math.round(v)));
         const ev = (Array.isArray(obj.evidence) ? obj.evidence : obj.evidence ? [obj.evidence] : []).filter(Boolean);
-        if (score != null && NEED_EVIDENCE.includes(k) && !hasEvidence(ev, card)) { score = null; unjudged.push(k); }
+        if (score != null && NEED_EVIDENCE.includes(k) && !hasEvidence(ev, card, src, stat)) { score = null; unjudged.push(k); }
         dims[k] = score;
         if (obj.note || ev.length) dimInfo[k] = { note: String(obj.note || ''), evidence: ev.map(x => (typeof x === 'string' ? { where: x } : { where: String(x.where || ''), quote: String(x.quote || '') })) };
     }
     op.dimensions = dims;
     op.dimInfo = dimInfo;
     op.unjudged = unjudged;
-    op.styleNotes = (Array.isArray(op.styleNotes) ? op.styleNotes : []).filter(x => x && x.aspect && String(x.quote || '').trim().length >= 4);
+    // 文体评语必须有原文：没有原文就一条都不留；有原文的，引文必须真在原文里
+    const notes = (Array.isArray(op.styleNotes) ? op.styleNotes : []).filter(x => x && x.aspect && String(x.quote || '').trim().length >= 4);
+    op.styleNotes = src && src.length >= 200 ? notes.filter(x => { const ok = quoteInText(x.quote, src); stat[ok ? 'ok' : 'bad']++; return ok; }) : [];
+    if (!(src && src.length >= 200)) stat.bad += notes.length;
+    op.evidenceCheck = { ...stat, against: src && src.length >= 200 ? '原文' : card ? '证据卡' : '无' };
     const list = v => (Array.isArray(v) ? v : v ? [v] : []).map(x => (typeof x === 'string' ? { point: x } : x)).filter(x => x?.point);
     op.agreedPoints = list(op.agreedPoints);
     op.disagreements = list(op.disagreements).map(x => ({ ...x, key: x.key === true || x.key === 'true' }));
@@ -170,13 +203,27 @@ export function normalizeOpinion(op, card) {
 export const RESPECT = { yes: '仍尊重作者', reserved: '有所保留', no: '不再看重作者' };
 export const FOLLOW = { continue: '会继续追读', argue: '想与作者争论', drop: '不再关注', undecided: '还没想好' };
 
+const opinionInflight = new Map();
+/** 同一条阅读记录的看法同时只生成一次（自动补完和手动点击撞上时，后来的等前一个的结果） */
 export async function generateOpinion(state, rec, era, settings) {
+    if (opinionInflight.has(rec.id)) return opinionInflight.get(rec.id);
+    const p = generateOpinionNow(state, rec, era, settings).finally(() => opinionInflight.delete(rec.id));
+    opinionInflight.set(rec.id, p);
+    return p;
+}
+async function generateOpinionNow(state, rec, era, settings) {
     const work = byId(state.works, rec.workId);
     const person = byId(state.persons, rec.personId);
     if (!work || !person) throw new Error('找不到作品或人物');
-    if (!['skimmed', 'finished'].includes(rec.read)) throw new Error('此人没有读这部作品，不会有看法');
+    if (!READ_DONE.includes(rec.read)) throw new Error('此人没有读这部作品，不会有看法');
     const card = work.evidence;
-    const hist = historyOf(state, person.id, rec.id, work.pennameId);
+    const hist = historyOf(state, person.id, rec.id, work.pennameId, rec.readDate);
+    const pen = byId(state.pennames, work.pennameId);
+    const knows = !!(pen && (pen.publicIdentityKnown || (pen.knownBy?.length ? pen.knownBy.includes(person.id) : person.knowsIdentity)));
+    const owner = pen?.owner || '主角';
+    const facts = factLines(state, person, rec.readDate, { knowsPen: knows, workId: work.id, ownerName: owner });
+    const priorBeliefs = perceptionsOf(state, person.id, { before: rec.readDate }).slice(-10);
+    const claims = claimsVisible(state, pen?.id, rec.readDate).slice(-6);
     const system = `你在模拟一位历史人物私下读完一部作品后的真实看法。时间：${rec.readDate}。
 时代约束：
 ${eraBrief(era, 600)}
@@ -189,20 +236,22 @@ ${eraBrief(era, 600)}
 1f. 不要用此人自己的文风反推他喜欢什么（体裁和目标不同，标准也会不同）。
 2. 推演系统已定：此人${READ_STATES[rec.read]}，总体倾向${['偏批评', '褒贬参半', '偏肯定'][rec.polarity + 1]}，${STRENGTH[rec.strength] || ''}。不得违背。
 3. 允许平淡的结果：觉得还行但没什么可说；只读懂一部分；认同论证却反对结论；认为不值得专门写文章。不要为了有趣而制造争议，也不要让人物显得格外深刻。
-4. ${rec.read === 'skimmed' ? '此人只读了一部分：只能评论他读到的部分，可以有误解。' : ''}
+4. ${rec.read === 'skimmed' ? '此人只读了一部分：只能评论他读到的部分，可以有误解。' : rec.read === 'unknown' ? '不知道此人读了多少：只就你有把握他读到的部分（开头）表态，其余维度宁可 null。' : ''}
 5. 这是私下看法，不是公开文章。
 5b. 各个维度独立判断，不必一致：完全可以“文笔出色、论证粗糙、结论不认同，但觉得作者值得关注”。
 5d. 若下面给出了“思想对照”，那是推演按他的议题立场与作品主张对出来的结果：agreedPoints / disagreements 要与之相符，并具体到作品里的论点；关键分歧标 key=true。思想分歧本身不等于不尊重作者。
 5e. styleNotes：读原文段落时，按下面的文体清单逐项看一遍，只写他确实会注意到、并且能引出原文短摘的项（通常 0–4 项）；没有把握的项不写。
 文体清单：
 ${STYLE_CHECKLIST.map(([a, b, c]) => `- ${a}：${b}（${c}）`).join('\n')}
+5f. beliefsAboutAuthor：只写他根据【作品本身】和【他确实知道的作者情况】能形成的判断，0–4 条。只凭作品推出来的一律是 inference（推测），不得写成 fact；作者私人情况（身世、国籍、母语、成长地、写作动机）他不知道的，不得出现，也不得当作猜中了的事实。他可能误判（misread），也可能同时持有互相矛盾的判断。知道作者的意图，不等于认可作者的做法。来自作者公开说法或亲口告诉他的，标 self_report；他也可以不信作者的自述。
 5c. 如果他以前读过这位作者的作品，必须对照下面列出的旧看法：保留仍然成立的判断（包括矛盾的判断），只在这部作品确实提供了理由时才修正，并在 changeFromBefore 里写明修正了哪一条。不要编造“作者越来越成熟”之类没有依据的成长线，也不要让他变得无条件欣赏作者。
 6. 只输出 JSON：
 ${OPINION_SCHEMA}`;
     const sl = stanceLines(person), pl = stylePrefLines(person), cl = claimLines(work);
     const cmpText = stanceText(stanceMatch(state, person, work));
-    const src = String(work.sourceText || '').trim();
-    const passage = src.length >= 200 ? (rec.read === 'skimmed' ? src.slice(0, 2500) : sampleText(src, 6000)) : '';
+    await loadSources(state);
+    const src = String(srcOf(state, work) || '').trim();
+    const passage = src.length >= 200 ? (rec.read === 'skimmed' || rec.read === 'unknown' ? src.slice(0, 2500) : sampleText(src, 6000)) : '';
     const user = `【人物】${person.name}${person.real ? '（真实历史人物）' : ''}
 身份：${(person.roles || []).join('、')}；关注：${(person.interests || []).join('、')}
 欣赏：${(person.likes || []).join('、') || '—'}；反感：${(person.dislikes || []).join('、') || '—'}
@@ -210,18 +259,28 @@ ${sl.length ? '议题立场：\n' + sl.map(x => '  - ' + x).join('\n') : '议题
 ${pl.length ? '文体偏好（倾向，需原文触发）：\n' + pl.map(x => '  - ' + x).join('\n') : '文体偏好：未登记'}
 备注：${person.notes || '—'}
 ${hist.length ? '此人以前读这个署名的作品时的看法（按时间先后）：\n' + hist.join('\n') : '此人以前没有读过这个署名的作品（或没有生成过看法）。'}
+【他对作者知道些什么】${knows ? `他知道署名“${pen?.name || ''}”就是${owner}。` : `他不知道署名“${pen?.name || ''}”背后是谁。`}
+${facts.join('\n')}
+${claims.length ? `作者以署名“${pen?.name || ''}”公开说过（他可能读到过，可以相信也可以不信）：\n${claims.map(c => `  - ${c.since ? c.since + ' ' : ''}${c.text}`).join('\n')}` : ''}
+${priorBeliefs.length ? '他此前对作者形成的认知（可以保留、修正或与新判断并存）：\n' + priorBeliefs.map(b => `  - ${b.formedAt} [${b.topic}] ${b.belief}（${PERC_KIND[b.kind] || b.kind}）`).join('\n') : ''}
 
 【作品】《${work.title}》；题材：${workTags(state, work).join('、')}
 ${cl.length ? '作品的主张：\n' + cl.map(x => '  - ' + x).join('\n') : ''}
 ${cmpText ? '思想对照（推演结果）：' + cmpText : ''}
 ${card ? '证据卡：\n' + cardText(card) : `（尚无证据卡，只有摘要：${work.summary || '无'}。没有原文时，技巧、论证、情感一律填 null，styleNotes 留空）`}
-${passage ? `\n【他读到的原文段落${rec.read === 'skimmed' ? '（只读了开头一部分）' : '（节选：开头、中段、结尾）'}】\n${passage}` : ''}`;
+${passage ? `\n【他读到的原文段落${rec.read === 'skimmed' || rec.read === 'unknown' ? '（只确定读到开头一部分）' : '（节选：开头、中段、结尾）'}】\n${passage}` : ''}`;
     const raw = await callLLM({ system, user, settings, maxTokens: 2600, label: `${person.name} 对《${work.title}》的私下看法` });
     const op = extractJSON(raw);
     if (!op || typeof op !== 'object' || !op.summary) throw new Error('模型没有按格式返回看法，请重试');
-    normalizeOpinion(op, card);
+    // 只读了开头的人，引文只能来自他读到的那一段
+    normalizeOpinion(op, card, rec.read === 'skimmed' || rec.read === 'unknown' ? src.slice(0, 2500) : src);
     op.generatedAt = new Date().toISOString();
     op.withCard = !!card;
+    // 对作者的认知：程序核对来源（标“确知”的必须对得上他真知道的私人信息）
+    const stored = storePerceptions(state, { rec, person, target: 'pen:' + (pen?.id || ''), beliefs: op.beliefsAboutAuthor, date: rec.readDate });
+    for (const p of stored) p.knowsOwner = knows; // 知道笔名就是主角的，他的认知同时针对主角本人
+    op.beliefs = stored.map(p => p.id);
+    delete op.beliefsAboutAuthor;
     rec.opinion = op;
     return op;
 }
@@ -269,7 +328,8 @@ ${evs.length ? '他已经写过的评论、书信：\n' + evs.join('\n') : ''}`;
 }
 
 export async function draftWorkClaims(state, work, settings) {
-    const src = String(work.sourceText || '').trim();
+    await loadSources(state);
+    const src = String(srcOf(state, work) || '').trim();
     if (src.length < 200 && !work.evidence && !work.summary) throw new Error('这部作品没有原文、证据卡或摘要，无从提取主张');
     const stanceIssues = issuePool(state, 'stances');
     const system = `你在为一个文学反响模拟器提取一部作品的“主张”：作品在哪些议题上表明了什么立场。

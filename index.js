@@ -8,6 +8,7 @@ import { guessPlace } from './src/era.js';
 import { mountUI, refresh, togglePanel, getEra, doAdvance, syncEraYear, aiFill, runSimNow } from './src/ui.js';
 import { takeSnapshot, rollbackFrom, snapshotFor } from './src/rollback.js';
 import { epistolaryStoryDate } from './src/epistolary.js';
+import { noteMainGeneration } from './src/llm.js';
 import { diffDays, cmp } from './src/date.js';
 
 const TAG = '[报刊回声]';
@@ -62,6 +63,7 @@ function detectFromChat(manual = false, messageId = null) {
     const prevYear = st.currentDate ? yearOf(st.currentDate) : null;
 
     if (messageId != null) takeSnapshot(st, messageId, pick.iso);
+    if (messageId != null) { st.dateLog = (st.dateLog || []).filter(x => x.mesId !== messageId); st.dateLog.push({ mesId: messageId, date: pick.iso }); }
     if (!st.currentDate) {
         st.currentDate = pick.iso;
         syncEraYear(st);
@@ -116,8 +118,9 @@ function onRollback(mesId, reason, redetect) {
             if (pick?.iso === snap.toDate) return;
         }
     }
+    if (st.dateLog) st.dateLog = st.dateLog.filter(x => x.mesId < mesId);
     const r = rollbackFrom(st, mesId);
-    if (!r) return;
+    if (!r) { saveState(); return; }
     logLine(st, `${reason}：回到 ${r.restoredDate || '（未设定）'}，撤掉 ${r.removed} 条推演事件`);
     saveState();
     if (r.removed) globalThis.toastr?.info(`第 ${mesId} 楼${reason}，报刊推演退回到 ${r.restoredDate || '起点'}（撤掉 ${r.removed} 条；你审核过的会在重推时沿用）`, '报刊回声');
@@ -156,18 +159,29 @@ function addSettingsDrawer() {
     div.querySelector('#pe-open').addEventListener('click', () => togglePanel(true));
 }
 
+/** 第 idx 楼之前识别到的最晚故事日期 */
+function dateBefore(st, idx) {
+    let d = null;
+    for (const x of st.dateLog || []) if (x.mesId < idx && (!d || cmp(x.date, d) > 0)) d = x.date;
+    return d || st.currentDate;
+}
+
 /** 每聊满 N 楼自动跑一次“一键推演到今天”（只在 AI 回复完之后检查，避免和主对话的生成撞车） */
 function floorTrigger() {
     const s = getSettings();
     const st = getState();
     const n = Math.floor(Number(s.autoFloorEvery) || 0);
+    const delay = Math.max(0, Math.floor(Number(s.autoFloorDelay) || 0));
     const len = ctx()?.chat?.length || 0;
+    const eff = Math.max(0, len - delay); // 只算到这一楼之前
     if (!st || !s.enabled || n <= 0 || !st.currentDate) return;
-    if (st.floorMark == null || len < st.floorMark) { st.floorMark = len; saveState(); return; } // 第一次，或删了楼
-    if (len - st.floorMark < n) return;
-    st.floorMark = len;
+    if (st.floorMark == null || eff < st.floorMark) { st.floorMark = eff; saveState(); return; } // 第一次，或删了楼
+    if (eff - st.floorMark < n) return;
+    st.floorMark = eff;
     saveState();
-    runSimNow(st, s, { auto: true, reason: `又聊了 ${n} 楼，到第 ${len} 楼` }).catch(e => console.warn(TAG, '自动推演失败', e));
+    const until = delay ? dateBefore(st, eff) : null;
+    runSimNow(st, s, { auto: true, reason: `又聊了 ${n} 楼，按第 ${eff} 楼之前的剧情${delay ? `，延迟 ${delay} 楼` : ''}`, until, rebaseFrom: delay ? eff : null, chatSkip: delay })
+        .catch(e => console.warn(TAG, '自动推演失败', e));
 }
 
 async function init() {
@@ -183,6 +197,8 @@ async function init() {
     const onMsg = id => { detectFromChat(false, num(id)); syncFromEpistolary(num(id)); };
     eventSource.on(E.MESSAGE_RECEIVED, id => { onMsg(id); floorTrigger(); });
     if (E.MESSAGE_SENT) eventSource.on(E.MESSAGE_SENT, onMsg);
+    if (E.GENERATION_STARTED) eventSource.on(E.GENERATION_STARTED, (type, opts, dry) => { if (!dry && type !== 'quiet') noteMainGeneration(true); });
+    for (const k of ['GENERATION_ENDED', 'GENERATION_STOPPED']) if (E[k]) eventSource.on(E[k], () => noteMainGeneration(false));
     if (E.MESSAGE_EDITED) eventSource.on(E.MESSAGE_EDITED, id => onRollback(num(id), '被改写', true));
     if (E.MESSAGE_SWIPED) eventSource.on(E.MESSAGE_SWIPED, id => onRollback(num(id), '换了回复', true));
     if (E.MESSAGE_DELETED) eventSource.on(E.MESSAGE_DELETED, len => onRollback(num(len), '被删除', false));
