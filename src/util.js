@@ -120,3 +120,22 @@ export function stripThinking(text) {
     t = t.replace(/<(think|thinking|reasoning|thought)(?:\s[^>]*)?>[\s\S]*$/i, ''); // 只有开头标签：后面整段都是思考
     return t.trim();
 }
+
+export const TEXT_LANG = { '': '自动判断', fr: '法文原文', zh: '中文稿（故事里实际以法文刊出）', bi: '法中对照', other: '其他语言稿' };
+/** 作品手头这份原文是什么语言：填了就用填的，否则按样本里汉字占比猜 */
+export function textLangOf(work, sample = '') {
+    if (work?.textLang) return work.textLang;
+    const t = String(sample || work?.sourceText || '').slice(0, 20000);
+    if (!t) return '';
+    // 一个汉字约等于四五个拉丁字母的信息量，按 4 折算
+    const cjk = (t.match(/[\u4e00-\u9fff\u3040-\u30ff]/g) || []).length, lat = (t.match(/[A-Za-zÀ-ÿ]/g) || []).length / 4;
+    if (cjk && lat && Math.min(cjk, lat) / (cjk + lat) > 0.2) return 'bi';
+    return cjk > lat ? 'zh' : lat ? 'fr' : '';
+}
+/** 原文不是法文时给模型的提醒 */
+export function langRule(lang) {
+    if (lang === 'zh') return '注意：手头这份原文是中文稿，故事里这部作品是以法文刊出的。可以据此判断内容、结构、意象、论证和叙事节奏，但不要把中文句子当作他读到的法文原句加引号引用，也不要评论具体的法文用词、语法和音韵；需要引用时写“某段写到……”的转述。';
+    if (lang === 'bi') return '注意：手头这份原文是法中对照。引用他读到的字句只用法文部分；中文部分只是对照，不是他读到的。';
+    if (lang === 'other') return '注意：手头这份原文不是故事里刊出时的语言。只据此判断内容与结构，不要把它当作他读到的原句引用或评论字词。';
+    return '';
+}

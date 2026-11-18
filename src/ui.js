@@ -1,6 +1,6 @@
 // ui.js — 面板界面（纯 DOM，不依赖框架）
 
-import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON, isStoryMessage } from './util.js';
+import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON, isStoryMessage, TEXT_LANG } from './util.js';
 import { weekdayZh, normalizeISO, yearOf, cmp, addDays, diffDays } from './date.js';
 import { planFloorSegments } from './segments.js';
 import {
@@ -20,7 +20,7 @@ import { extractFromText, loadWorldbookText } from './extract.js';
 import { callLLM, listModels } from './llm.js';
 import { suggestRelations, acceptRelSuggestion, CERTAINTY, checkOutlets, acceptOutletCheck, fmtOutletVal, OUT_FIELDS } from './relsuggest.js';
 import { Fab } from './fab.js';
-import { PROJECT_STAGES, POINT_KINDS, ADOPT, ME, blankProject, blankTalk, blankPoint, talkPeople, normProject, normTalk } from './ideas.js';
+import { PROJECT_STAGES, POINT_KINDS, ADOPT, adoptOptions, ME, blankProject, blankTalk, blankPoint, talkPeople, normProject, normTalk } from './ideas.js';
 import { FACT_TOPICS, FACT_VIA, PERC_KIND, PERC_TOPICS, factsKnownBy, perceptionsOf, blankFact } from './perception.js';
 import { perceptionMatrix, latestImage, publicPieces, activeCircles, generatePublicImage, reviewPerceptions, manualPerception, blankSelf, blankAssumed, SELF_MODE, SPREAD, REVIEW_TYPE } from './image.js';
 import { workTimeline, timelineSvg, networkData, visibleNetwork, layoutNetwork, networkSvg, paperHtml, paperDates, PAPER_CSS, outletOriginal, frDate, paperMissingFr, paperItems } from './views.js';
@@ -227,6 +227,7 @@ const WORK_SPEC = [
     { key: 'summary', label: '内容摘要', type: 'textarea', rows: 3 },
     { key: 'series', label: '系列', hint: '同系列的作品（如《生者与死亡》各册）读者最想接着找来读。留空则从书名推断，去掉“第一册”“（上）”之类' },
     { key: 'parentId', label: '同一作品的另一个版本', type: 'select', options: optsOf(s => s.works, 'title'), hint: '如单行本对应的连载版。读过另一版本的人不太会再读一遍' },
+    { key: 'textLang', label: '这份原文的语言', type: 'select', options: TEXT_LANG, hint: '故事里作品以法文刊出，但手头存的是中文稿时选“中文稿”：生成看法、写书评时只评内容和结构，不会把中文句子当成法文原句引用。“自动判断”按汉字占比猜' },
     { key: 'sourceText', label: '原文（用于生成证据卡，可粘贴全文）', type: 'textarea', rows: 6 },
 ];
 
@@ -676,7 +677,7 @@ function simPersonPage(st) {
     const works = [...st.works].filter(w => w.pubDate).sort((a, b) => cmp(a.pubDate, b.pubDate));
     const recOf = w => (st.receptions || []).filter(r => r.workId === w.id && r.personId === p.id && !r.superseded)
         .sort((a, b) => ['finished', 'skimmed', 'ignored', 'none'].indexOf(a.read) - ['finished', 'skimmed', 'ignored', 'none'].indexOf(b.read))[0];
-    const fol = st.pennames.map(pen => ({ pen, since: st.followers?.[pen.id]?.[p.id], imp: impressionAt(st, pen.id, p.id, st.currentDate), hist: st.impressions?.[pen.id]?.[p.id] || [] })).filter(x => x.hist.length || x.since);
+    const fol = st.pennames.map(pen => ({ pen, since: st.followers?.[pen.id]?.[p.id], imp: impressionAt(st, pen.id, p.id, st.currentDate), hist: (st.impressions?.[pen.id]?.[p.id] || []).filter(x => !st.currentDate || cmp(x.date, st.currentDate) <= 0), later: (st.impressions?.[pen.id]?.[p.id] || []).filter(x => st.currentDate && cmp(x.date, st.currentDate) > 0).length })).map(x => (x.since && st.currentDate && cmp(x.since, st.currentDate) > 0 ? { ...x, since: null } : x)).filter(x => x.hist.length || x.since);
     const odds = simView.odds || {};
     const wi = simView.whatIf;
     const r = simView.result;
@@ -687,7 +688,7 @@ function simPersonPage(st) {
     ${fol.length ? `<h5>作者印象 <small class="pe-muted">和“欣赏/反感”分开：那是长期口味，这里是读过之后对这个署名的看法，按时间累积，可升可降</small></h5>
       ${fol.map(f => `<div class="pe-callout">${penChip(st, f.pen.id)} 截至 ${h(st.currentDate || '')}：<b>${IMPRESSION_LABEL(f.imp)}</b>（${f.imp.toFixed(2)}）
         ${f.since ? ` · 约 ${h(f.since)} 起开始留意这个署名` : ''}
-        <div class="pe-muted">${f.hist.slice().sort((a, b) => cmp(a.date, b.date)).map(x => `${h(x.date)} 读${bt(byId(st.works, x.workId)?.title || '')}${x.delta >= 0 ? '+' : ''}${x.delta}`).join(' → ')}</div>
+        <div class="pe-muted">${f.hist.slice().sort((a, b) => cmp(a.date, b.date)).map(x => `${h(x.date)} 读${bt(byId(st.works, x.workId)?.title || '')}${x.delta >= 0 ? '+' : ''}${x.delta}`).join(' → ')}${f.later ? ` <span title="推演已经排好、日期还没到的阅读带来的变化，到那天才算数">（之后还有 ${f.later} 次变化，日期未到）</span>` : ''}</div>
         <div class="pe-muted">印象 ≥ 1 时，此后的新作会经“追读”渠道读到；只看他当时已有的印象，以后的看法不会倒过来影响以前。他是否知道这个笔名背后是谁另算（“知道笔名身份”），对一个笔名的印象也不会转到另一个笔名上。</div></div>`).join('')}` : ''}
     ${personKnowledgeHtml(st, p)}
     ${relationsOf(st, p).length ? `<h5>熟人 <small class="pe-muted">读到东西可能谈起的对象</small></h5><div class="pe-era-chips pe-era-chips-wrap">${relationsOf(st, p).map(r => { const q = byId(st.persons, r.to); return q ? `<span class="pe-chip">${personTag(q)} ${h(REL_TYPES[r.type] || '')} · ${h(REL_FREQ[r.frequency] || '')}${r.implicit ? '（同刊同事）' : ''}${r.since ? ` · ${h(r.since)} 起` : ''}${r.until ? ` · 至 ${h(r.until)}` : ''}${r.discloseIdentity ? ' · 可能说出身份' : ''}</span>` : ''; }).join('')}</div>` : ''}
@@ -699,7 +700,7 @@ function simPersonPage(st) {
           : ' · <span class="pe-muted">还没推演</span>'}
         ${rc?.ideas && !future ? `<div class="pe-ideas">${ideasHtml(rc.ideas)}</div>` : ''}${rc?.opinion && !(rc.readDate && st.currentDate && rc.readDate > st.currentDate) ? `<div class="pe-evi">${h(rc.opinion.summary || '')} ${dimsHtml(rc.opinion.dimensions)}${rc.opinion.authorView ? `<div>对作者：${h(rc.opinion.authorView)}</div>` : ''}</div>` : ''}
         ${o ? `<div class="pe-muted">若重新推演：读到 ${pctTxt(o.read)}，偏肯定 ${pctTxt(o.read ? o.pos : 0)}，公开发表 ${pctTxt(o.public)}，写信 ${pctTxt(o.letter)}</div>` : ''}
-        ${rc?.why?.length ? `<details class="pe-why"><summary>为什么？</summary><ol>${rc.why.map(t => `<li>${h(t)}</li>`).join('')}</ol></details>` : ''}
+        ${rc?.why?.length ? `<details class="pe-why" ${whyOpen ? 'open' : ''}><summary>为什么？</summary><ol>${rc.why.map(t => `<li>${h(t)}</li>`).join('')}</ol></details>` : ''}
       </div><div class="pe-card-actions"><button class="pe-mini" data-act="sim-person-pick" data-id="${w.id}">假如他读到…</button></div></div>`; }).join('')}
     <div class="pe-toolbar"><button data-act="sim-person-odds">估算他读到每部作品的可能性</button></div>
 
@@ -824,12 +825,12 @@ function evCard(st, e, actions = '', { compact = false } = {}) {
           <span class="pe-card-date">${h(e.date)}</span>${approxIssue(st, e) ? `<span class="pe-chip" title="月刊/半月刊没填出刊日：日期按每月 1 日（半月刊 1、15 日）约略推算。在刊物资料里填“出刊日”就准了">约 ${h(approxIssue(st, e))}</span>` : ''}<span class="pe-muted">${e.datePrecision ? { xun: '（只知道旬）', month: '（只知道月份）', noLaterThan: '（不晚于）' }[e.datePrecision] || '' : weekdayZh(e.date)}</span>
           <span class="pe-chip pe-chip-layer">${h(LAYERS[e.layer]?.label || e.layer)}</span>${pol}
           ${major && e.status === 'candidate' ? '<span class="pe-chip pe-chip-major">需确认</span>' : ''}
-          ${e.origin === 'manual' ? '<span class="pe-chip">手动</span>' : ''}${e.auto ? '<span class="pe-chip">自动入账</span>' : ''}${e.reactsTo ? '<span class="pe-chip">回应前文</span>' : ''}${e.epiLetterId ? '<span class="pe-chip">来自书信簿</span>' : ''}${e.backfill ? '<span class="pe-chip" title="回溯推演补出来的，原记录里没有">回溯</span>' : ''}${e.epiSent ? `<span class="pe-chip pe-chip-layer" title="已寄进书信簿">✉ ${h(e.epiSent.code || e.epiSent.id)}</span>` : ''}${e.status === 'approved' && !knownToUser(st, e, getSettings()) && (!st.currentDate || e.date <= st.currentDate) ? (LAYERS[e.layer]?.public ? (ks => `<span class="pe-chip pe-chip-no" title="已经见报，但主角还没读到：不会注入主对话，NPC 也不会当作主角知道。可以在“设置 · 主角知道什么”里改规则，或点“主角已读到”">主角还没读到${ks ? '（约 ' + h(ks) + ' 经剪报得知）' : ''}</span>`)(knownSince(st, e, getSettings())) : `<span class="pe-chip pe-chip-no" title="别人之间的私信：主角不知道内容，也不会注入主对话">主角不知道${e.to && e.to !== 'protagonist' ? '（寄给 ' + h(e.to) + '）' : ''}</span>`) : ''}
+          ${e.origin === 'manual' ? '<span class="pe-chip">手动</span>' : '<span class="pe-chip" title="推演算出来、你批准入账的，不是聊天里写到的事。读者来信、剪报的数量也是推演估计">推演</span>'}${e.auto ? '<span class="pe-chip">自动入账</span>' : ''}${e.reactsTo ? '<span class="pe-chip">回应前文</span>' : ''}${e.epiLetterId ? '<span class="pe-chip">来自书信簿</span>' : ''}${e.backfill ? '<span class="pe-chip" title="回溯推演补出来的，原记录里没有">回溯</span>' : ''}${e.epiSent ? `<span class="pe-chip pe-chip-layer" title="已寄进书信簿">✉ ${h(e.epiSent.code || e.epiSent.id)}</span>` : ''}${e.status === 'approved' && !knownToUser(st, e, getSettings()) && (!st.currentDate || e.date <= st.currentDate) ? (LAYERS[e.layer]?.public ? (ks => `<span class="pe-chip pe-chip-no" title="已经见报，但主角还没读到：不会注入主对话，NPC 也不会当作主角知道。可以在“设置 · 主角知道什么”里改规则，或点“主角已读到”">主角还没读到${ks ? '（约 ' + h(ks) + ' 经剪报得知）' : ''}</span>`)(knownSince(st, e, getSettings())) : `<span class="pe-chip pe-chip-no" title="别人之间的私信：主角不知道内容，也不会注入主对话">主角不知道${e.to && e.to !== 'protagonist' ? '（寄给 ' + h(e.to) + '）' : ''}</span>`) : ''}
         </div>
         <div class="pe-card-title">${whoText || '<span class="pe-muted">（未指定）</span>'}${work ? ` <span class="pe-muted">评</span> ${bt(work.title)} ${st.pennames.length > 1 ? penChip(st, work.pennameId) : ''}` : ''}</div>
         ${e.text?.title ? `<div class="pe-card-sub">「${h(e.text.title)}」${e.text.byline ? ` <span class="pe-muted">${h(e.text.byline)}</span>` : ''}</div>` : ''}
         ${sum ? `<div class="pe-card-sum">${h(compact ? truncate(sum, 90) : sum)}</div>` : ''}
-        ${!compact && e.why?.length ? `<details class="pe-why"><summary>为什么会发生？</summary><ol>${e.why.map(w => `<li>${h(w)}</li>`).join('')}</ol></details>` : ''}
+        ${!compact && e.why?.length ? `<details class="pe-why" ${whyOpen ? 'open' : ''}><summary>为什么会发生？</summary><ol>${e.why.map(w => `<li>${h(w)}</li>`).join('')}</ol></details>` : ''}
         ${!compact ? (e.flags || []).filter(f => f !== '手动录入').map(f => `<div class="pe-flag">⚠ ${h(f)}</div>`).join('') : ''}
         ${!compact && e.text?.body ? `<details class="pe-why"><summary>正文</summary><div class="pe-text">${h(e.text.body).replace(/\n/g, '<br>')}</div></details>` : ''}
       </div>
@@ -837,6 +838,7 @@ function evCard(st, e, actions = '', { compact = false } = {}) {
     </div>`;
 }
 
+let whyOpen = false;
 function queue(st) {
     const cands = st.ledger.filter(e => e.status === 'candidate');
     const majors = cands.filter(e => isMajor(st, e));
@@ -853,7 +855,7 @@ function queue(st) {
             <button data-act="ev-note" data-id="${e.id}">写稿要求</button></details>`;
     return `
     <h4>需要你确认 <span class="pe-count">${cands.length}</span>
-      ${cands.length ? `<span class="pe-spacer"></span><button data-act="approve-all">全部入账</button><button data-act="reject-all">全部驳回</button>` : ''}</h4>
+      <span class="pe-spacer"></span><button data-act="why-toggle" title="一次展开或收起这一页所有的“为什么”">${whyOpen ? '收起全部“为什么”' : '展开全部“为什么”'}</button>${cands.length ? `<button data-act="approve-all">全部入账</button><button data-act="reject-all">全部驳回</button>` : ''}</h4>
     <div class="pe-muted">入账后才计入声誉、进入主对话。正式书评、论战和真实人物的私信总在这里等你；次要事件默认自动入账（可在设置里改）。</div>
     ${majors.map(e => evCard(st, e, act(e))).join('')}
     ${minors.length ? `${majors.length ? '<h5>次要事件</h5>' : ''}${minors.map(e => evCard(st, e, act(e))).join('')}` : ''}
@@ -929,7 +931,7 @@ function reading(st) {
               ${r.opinion ? `<div class="pe-evi">私下看法：${h(r.opinion.summary || '')}${r.opinion.understanding && r.opinion.understanding !== 'full' ? `（${r.opinion.understanding === 'partial' ? '部分理解' : '有误读'}）` : ''} ${dimsHtml(r.opinion.dimensions)}
                 ${opinionDetail(r.opinion)}
                 ${r.opinion.authorView ? `<div>对作者：${h(r.opinion.authorView)}</div>` : ''}${r.opinion.changeFromBefore ? `<div class="pe-muted">与以前相比：${h(r.opinion.changeFromBefore)}</div>` : ''}</div>` : ''}
-              <details class="pe-why"><summary>为什么？</summary><ol>${(r.why || []).map(x => `<li>${h(x)}</li>`).join('')}</ol></details>
+              <details class="pe-why" ${whyOpen ? 'open' : ''}><summary>为什么？</summary><ol>${(r.why || []).map(x => `<li>${h(x)}</li>`).join('')}</ol></details>
               ${!future && READ_DONE.includes(r.read) ? `<button class="pe-mini" data-act="gen-opinion" data-id="${r.id}">${r.opinion ? '重新生成看法' : '生成私下看法'}</button>` : ''}</li>`;
         }).join('');
         const key = 'rd:' + wid;
@@ -1747,6 +1749,13 @@ function saveSettingsLive() {
 function onChange(e) {
     const t = e.target;
     if (t.id === 'pe-find') return;
+    if (t.matches?.('.pe-pt-row [data-k2="kind"]')) {
+        const sel = t.closest('.pe-pt-row').querySelector('[data-k2="adopted"]');
+        const cur = sel.value, opts = adoptOptions(t.value);
+        sel.innerHTML = opts.map(a => `<option value="${a}" ${a === cur ? 'selected' : ''}>${ADOPT[a]}</option>`).join('');
+        if (!opts.includes(cur)) sel.value = t.value === 'deed' ? 'fulfilled' : 'pending';
+        return;
+    }
     if (t.id === 'pe-tl-work' && simView?.kind === 'timeline') { simView.workId = t.value; refresh(); return; }
     if (simView?.kind === 'paper' && ['pe-pp-outlet', 'pe-pp-date', 'pe-pp-span'].includes(t.id)) {
         const st = getState();
@@ -2117,6 +2126,7 @@ async function onClick(e) {
         case 'bitem-edit': case 'bitem-del': case 'bitem-save': case 'bitem-cancel': case 'bundle-edit-all': case 'bundle-save-json': bundleItemAction(act, st, btn); break;
         case 'sg-accept': case 'sg-reject': case 'sg-suggest': await suggestAction(act, st, s, btn); break;
         case 'oc-run': case 'oc-accept': case 'oc-reject': await outletCheckAction(act, st, s, btn); break;
+        case 'why-toggle': whyOpen = !whyOpen; refresh(); break;
         case 'cp-new': case 'cp-edit': case 'cp-del': case 'cp-save': case 'it-new': case 'it-edit': case 'it-del': case 'it-pres-add': case 'it-pt-add': case 'it-row-del': case 'it-save': ideasAction(act, st, btn); break;
         case 'rs-run': case 'rs-accept': case 'rs-guess': case 'rs-reject': case 'rs-accept-doc': await relSuggestAction(act, st, s, btn); break;
         case 'lore-sync': {
@@ -3579,7 +3589,7 @@ function pointRow(st, p) {
       <select class="text_pole" data-k2="by">${personOpts(st, p.by || ME, true)}</select>
       <select class="text_pole" data-k2="kind">${Object.entries(POINT_KINDS).map(([a, b]) => `<option value="${a}" ${a === p.kind ? 'selected' : ''}>${b}</option>`).join('')}</select>
       <input type="text" class="text_pole pe-pt-text" data-k2="text" value="${h(p.text || '')}" placeholder="说了什么，一句话">
-      <select class="text_pole" data-k2="adopted" title="建议：主角采纳没有；答应帮忙：兑现没有（主角自己的话不用填）">${Object.entries(ADOPT).map(([a, b]) => `<option value="${a}" ${a === (p.adopted || 'pending') ? 'selected' : ''}>${b}</option>`).join('')}</select>
+      <select class="text_pole" data-k2="adopted" title="建议、构想：主角采纳没有；答应帮忙、做了实事：兑现没有（主角自己的话不用填）">${adoptOptions(p.kind).map(a => `<option value="${a}" ${a === (p.adopted || 'pending') ? 'selected' : ''}>${ADOPT[a]}</option>`).join('')}</select>
       <button class="menu_button pe-mini" data-act="it-row-del">✕</button></div>`;
 }
 function projectEditor(st, p) {

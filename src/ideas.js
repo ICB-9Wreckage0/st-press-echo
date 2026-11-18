@@ -8,7 +8,11 @@ import { uid } from './util.js';
 export const PROJECT_STAGES = { idea: '刚有念头', planning: '构思中', drafting: '动笔了', paused: '搁置', abandoned: '放弃', published: '已成作品' };
 export const POINT_KINDS = { idea: '构想', suggestion: '建议', question: '提问', objection: '质疑', praise: '赞许', remark: '评论', joke: '调侃', info: '提供资料', promise: '答应帮忙', deed: '做了实事' };
 export const ADOPT = { pending: '未定', adopted: '采纳', partial: '部分采纳', revised: '改过后采纳', rejected: '没采纳', fulfilled: '已兑现', broken: '没兑现' };
-export const ME = '__me'; // 观点出自主角
+export const ME = '__me';
+export const PROMISE_KINDS = ['promise', 'deed'];
+const ADOPT_FOR = { idea: ['pending', 'adopted', 'partial', 'revised', 'rejected'], promise: ['pending', 'fulfilled', 'broken'] };
+/** 这一条观点的最后一栏可选什么：建议看“采纳没有”，答应帮忙/做了实事看“兑现没有” */
+export const adoptOptions = kind => ADOPT_FOR[PROMISE_KINDS.includes(kind) ? 'promise' : 'idea']; // 观点出自主角
 
 const byId = (list, id) => (list || []).find(x => x.id === id) || null;
 
@@ -95,6 +99,6 @@ export function normTalk(t) {
     const o = { ...blankTalk(), ...t };
     o.present = [...new Set((o.present || []).filter(Boolean))];
     o.mentions = [...new Set((o.mentions || []).filter(x => x && x !== o.projectId))];
-    o.points = (o.points || []).filter(x => x && String(x.text || '').trim()).map(x => ({ ...blankPoint(), ...x, kind: POINT_KINDS[x.kind] ? x.kind : 'idea', adopted: ADOPT[x.adopted] ? x.adopted : 'pending' }));
+    o.points = (o.points || []).filter(x => x && String(x.text || '').trim()).map(x => { const kind = POINT_KINDS[x.kind] ? x.kind : 'idea'; const opts = adoptOptions(kind); return { ...blankPoint(), ...x, kind, adopted: opts.includes(x.adopted) ? x.adopted : (kind === 'deed' ? 'fulfilled' : 'pending') }; });
     return o;
 }

@@ -8,6 +8,7 @@ import { LAYERS, FORMS, CIRCLES, PERIODICITY, byId, READ_DONE } from './engine.j
 import { weekdayZh, yearOf } from './date.js';
 import { eraBrief } from './era.js';
 import { factsKnownBy, perceptionsOf, claimsVisible, PERC_KIND } from './perception.js';
+import { textLangOf, langRule } from './util.js';
 import { ideasKnownBy } from './ideas.js';
 import { cardText, generateOpinion, stanceLines, stylePrefLines, claimLines, RESPECT, FOLLOW } from './analysis.js';
 
@@ -98,6 +99,7 @@ ${eraBrief(era)}
         if (cv.length) lines.push(`作者以这个署名公开说过（可以引用、反驳或不理会）：${cv.map(c => c.text).join('；')}`);
         if (claimLines(work).length) lines.push(`作品的主张：${claimLines(work).join('；')}`);
         if (work.evidence) { lines.push('证据卡：'); lines.push(cardText(work.evidence, 3000)); }
+        if (langRule(textLangOf(work))) lines.push(langRule(textLangOf(work)).replace('他读到的', '报上刊出的').replace('他读到', '读者读到'));
     }
     const rec = ev.receptionId ? (state.receptions || []).find(r => r.id === ev.receptionId) : null;
     if (rec) {

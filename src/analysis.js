@@ -5,7 +5,7 @@
 import { callLLM } from './llm.js';
 import { srcOf, loadSources } from './sources.js';
 import { factLines, perceptionsOf, storePerceptions, claimsVisible, PERC_TOPICS, PERC_KIND } from './perception.js';
-import { extractJSON, truncate } from './util.js';
+import { extractJSON, truncate, textLangOf, langRule } from './util.js';
 import { ideaLines } from './ideas.js';
 import { byId, workTags, READ_STATES, STRENGTH, FORMS, SIDES, STANCE_STRENGTH, TOLERANCE, normSide, normStrength, stanceMatch, stanceText, READ_DONE } from './engine.js';
 import { eraBrief } from './era.js';
@@ -38,7 +38,8 @@ export async function buildEvidenceCard(work, settings, state = null) {
 3. 原文太长时，优先覆盖开头、转折、结尾和最核心的论证。
 4. 只输出 JSON：
 ${CARD_SCHEMA}`;
-    const user = `作品：《${work.title}》（${FORMS[work.form] || ''}）\n\n原文${src.length > 24000 ? `（全文 ${src.length} 字，这里是开头、中段和结尾的节选）` : ''}：\n${sampleText(src, 24000)}`;
+    const lr = langRule(textLangOf(work, src));
+    const user = `作品：《${work.title}》（${FORMS[work.form] || ''}）${lr ? `\n${lr.replace(/他读到的|他读到/g, '读者读到的')}证据卡里的摘句照原文抄，但要知道它不是刊出时的字句。` : ''}\n\n原文${src.length > 24000 ? `（全文 ${src.length} 字，这里是开头、中段和结尾的节选）` : ''}：\n${sampleText(src, 24000)}`;
     const raw = await callLLM({ system, user, settings, maxTokens: 3500, label: `生成《${work.title}》的证据卡` });
     const card = extractJSON(raw);
     card.builtAt = new Date().toISOString();
@@ -269,7 +270,7 @@ ${priorBeliefs.length ? '他此前对作者形成的认知（可以保留、修�
 ${cl.length ? '作品的主张：\n' + cl.map(x => '  - ' + x).join('\n') : ''}
 ${cmpText ? '思想对照（推演结果）：' + cmpText : ''}
 ${card ? '证据卡：\n' + cardText(card) : `（尚无证据卡，只有摘要：${work.summary || '无'}。没有原文时，技巧、论证、情感一律填 null，styleNotes 留空）`}
-${passage ? `\n【他读到的原文段落${rec.read === 'skimmed' || rec.read === 'unknown' ? '（只确定读到开头一部分）' : '（节选：开头、中段、结尾）'}】\n${passage}` : ''}`;
+${passage ? `\n【他读到的原文段落${rec.read === 'skimmed' || rec.read === 'unknown' ? '（只确定读到开头一部分）' : '（节选：开头、中段、结尾）'}】\n${langRule(textLangOf(work, passage)) ? langRule(textLangOf(work, passage)) + '\n' : ''}${passage}` : (langRule(textLangOf(work)) ? '\n' + langRule(textLangOf(work)) : '')}`;
     const raw = await callLLM({ system, user, settings, maxTokens: 2600, label: `${person.name} 对《${work.title}》的私下看法` });
     const op = extractJSON(raw);
     if (!op || typeof op !== 'object' || !op.summary) throw new Error('模型没有按格式返回看法，请重试');
