@@ -844,3 +844,17 @@ span.pe-pol:not(.pe-chip) { font-size: .9em; padding: 0 4px; border: 1px solid; 
 .pe-range { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
 .pe-range input[type=range] { width: 14em; accent-color: var(--pe-accent); }
 .pe-range output { min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; }
+.pe-callout.pe-orgptr { display: block; }
+.pe-orgptr .pe-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--pe-border); }
+.pe-orgptr .pe-actions-extra { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+
+/* 创作构想与灵感讨论 */
+.pe-cp-card { border: 1px solid var(--pe-line, rgba(255,255,255,.12)); border-radius: 8px; padding: 10px 12px; margin: 8px 0; display: block; }
+.pe-cp-card > div { margin: 2px 0; }
+.pe-it-list { margin-top: 6px; }
+.pe-it-card { border-left: 2px solid var(--pe-line, rgba(255,255,255,.15)); padding: 4px 0 4px 10px; margin: 8px 0; }
+.pe-it-points { margin: 4px 0 0 1.2em; padding: 0; }
+.pe-it-points li { margin: 3px 0; line-height: 1.6; }
+.pe-kb-row.pe-pres-row { grid-template-columns: minmax(10em, 18em) auto; justify-content: start; }
+.pe-kb-row.pe-pt-row { grid-template-columns: 11em 7em minmax(12em, 1fr) 8.5em auto; }
+@media (max-width: 760px) { .pe-kb-row.pe-pt-row { grid-template-columns: 1fr 1fr; } .pe-kb-row.pe-pt-row .pe-pt-text { grid-column: 1 / -1; } }

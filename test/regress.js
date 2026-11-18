@@ -560,4 +560,83 @@ function base(seed = 'reg') {
     assert.equal(mine.readDate, '1890-06-05'); assert(rep3.skipped.some(x => x.includes('保留你的')));
     ok('同一份整理包导入两次不重复；新版改了日期会替换旧的整理包记录；你手动录的保留');
 }
+// 28. 隐藏楼层仍是剧情：整理与回溯会读；酒馆自己的系统提示不算
+{
+    const { isStoryMessage } = await import('../src/util.js');
+    const hidden = { name: '勒鲁', is_user: true, is_system: true, mes: '1890年4月3日，我把稿子寄给了瓦莱特。', extra: {} };
+    const sys = { name: 'SillyTavern System', is_system: true, mes: '欢迎', extra: { type: 'welcome' } };
+    const nar = { name: '旁白', is_system: true, mes: '雨下了一整夜。', extra: { type: 'narrator' } };
+    assert(isStoryMessage(hidden) && !isStoryMessage(hidden, false) && !isStoryMessage(sys) && isStoryMessage(nar));
+    const txt = B.chatToText([hidden, sys, { name: 'x', mes: '正文' }]);
+    assert(txt.includes('寄给了瓦莱特') && !txt.includes('欢迎'));
+    assert(!B.chatToText([hidden], false).includes('瓦莱特'));
+    ok('隐藏的楼层照样算剧情（可在设置里关掉）；酒馆的系统提示不算');
+}
+// 29. 创作构想与灵感讨论：只有在场的人知道；不进名声/阅读/反响；关联作品后只作背景，不保证好评
+{
+    const I = await import('../src/ideas.js');
+    const { personEntry } = await import('../src/lore.js');
+    const t = base('idea'); t.currentDate = '1890-05-02';
+    const pack = {
+        creativeProjects: [{ title: '变性小说（暂名）', stage: 'planning', premise: '未来的医生记录一次性别转换', forms: '2100 年医生手记 / 2030 年书信体' }],
+        ideaDiscussions: [
+            { project: '变性小说（暂名）', date: '1890-04-30', place: '马车上', ref: 'AM0509', present: ['提奥'], points: [{ by: '提奥', kind: 'suggestion', text: '写成 2100 年医生的手记' }, { by: '主角', kind: 'idea', text: '激素与前臂皮瓣' }] },
+            { project: '变性小说（暂名）', date: '1890-05-01', place: '里沃利街茶室', ref: 'AM0515', present: ['米尔博'], points: [{ by: '米尔博', kind: 'objection', text: '要分清商业诱导与自主选择' }] },
+        ],
+    };
+    const nb = B.normalizeBundle(pack);
+    const pv = B.previewBundle(t, nb);
+    assert.equal(pv.counts.creativeProjects.new, 1); assert.equal(pv.counts.ideaDiscussions.new, 2);
+    const nLedger = t.ledger.length, nRec = (t.receptions || []).length, nWorks = t.works.length;
+    B.applyBundle(t, nb, {});
+    assert.equal(t.projects.length, 1); assert.equal(t.ideaTalks.length, 2);
+    assert.equal(t.ledger.length, nLedger, '不产生反响'); assert.equal((t.receptions || []).length, nRec, '不产生阅读'); assert.equal(t.works.length, nWorks, '不算作品');
+    assert(t.ideaTalks.every(x => x.points.every(p => p.adopted === 'pending')), '采纳状态默认未定');
+    assert.equal(t.projects[0].since, '1890-04-30');
+    // 只有在场的人知道
+    assert.equal(I.ideasKnownBy(t, 'theo', '1890-05-02')[0].talks.length, 1);
+    assert.equal(I.ideasKnownBy(t, 'mir', '1890-05-02')[0].talks.length, 1, '米尔博只知道他在场的那次');
+    assert.equal(I.ideasKnownBy(t, 'gour', '1890-05-02').length, 0, '不在场的人不知道');
+    assert.equal(I.ideasKnownBy(t, 'mir', '1890-04-30').length, 0, '讨论之前不知道');
+    assert(!JSON.stringify(I.ideasKnownBy(t, 'mir', '1890-05-02')).includes('医生的手记'), '米尔博不知道提奥那次聊的');
+    assert(personEntry(t, t.persons.find(p => p.id === 'theo')).content.includes('还没写成'));
+    assert(!personEntry(t, t.persons.find(p => p.id === 'gour')).content.includes('变性'));
+    // 没关联作品：读别的书时不带
+    assert.equal(I.ideaLines(t, t.persons.find(p => p.id === 'mir'), '1890-09-01', { workId: 'aine' }).length, 0);
+    // 关联作品后：给背景，并明说不保证好评
+    t.projects[0].workId = 'aine';
+    const L = I.ideaLines(t, t.persons.find(p => p.id === 'mir'), '1890-09-01', { workId: 'aine', knowsPen: false }).join('\n');
+    assert(L.includes('商业诱导') && L.includes('不是加分项') && L.includes('认不出'));
+    // 再导入一次不重复；你改过的采纳状态不被覆盖回未定
+    t.ideaTalks[1].points[0].adopted = 'adopted';
+    B.applyBundle(t, B.normalizeBundle(pack), {});
+    assert.equal(t.ideaTalks.length, 2); assert.equal(t.ideaTalks[1].points.length, 1); assert.equal(t.ideaTalks[1].points[0].adopted, 'adopted');
+    E.recomputeReputation(t);
+    assert(!Object.keys(t.reputation || {}).length || Object.values(t.reputation).every(c => Object.values(c).every(r => !r.fame)), '不影响名声');
+    ok('灵感讨论只让在场的人知道；不算作品、不进阅读反响名声；关联作品后只当背景，不保证好评');
+}
+// 30. 讨论里顺带提起别的构想：在场者只知道有这么个构想，不知道内容；答应帮忙可记“已兑现”
+{
+    const I = await import('../src/ideas.js');
+    const t = base('idea2'); t.currentDate = '1890-05-25';
+    B.applyBundle(t, B.normalizeBundle({
+        creativeProjects: [{ title: '性别小说', premise: '2030 年医学改变生理性别' }, { title: '反素食随笔', order: '等《共和国的门》写完再写' }],
+        ideaDiscussions: [
+            { project: '性别小说', date: '1890-05-01', present: ['米尔博'], points: [{ by: '米尔博', kind: 'objection', text: '区分商业诱导与自主' }] },
+            { project: '反素食随笔', date: '1890-05-23', present: ['米尔博', '古尔蒙'], mentions: ['性别小说'], points: [{ by: '古尔蒙', kind: 'promise', text: '替他记下纲要，到时候来催稿', adopted: 'pending' }, { by: '米尔博', kind: 'remark', text: '担心又被新点子挤掉，像那部性别小说' }] },
+            { project: '反素食随笔', date: '1890-05-24', present: ['提奥'], points: [{ by: '文森特', kind: 'deed', text: '送来催稿插画', adopted: 'fulfilled' }] },
+        ],
+    }), {});
+    assert.equal(t.projects.length, 2); assert.equal(t.projects[1].order, '等《共和国的门》写完再写');
+    const g = I.ideasKnownBy(t, 'gour', '1890-05-25');
+    const sex = g.find(k => k.project.title === '性别小说');
+    assert(sex && !sex.talks.length && sex.heardOf.length === 1, '古尔蒙只听人提起过性别小说');
+    t.projects[0].workId = 'aine';
+    const L = I.ideaLines(t, t.persons.find(p => p.id === 'gour'), '1890-09-01', { workId: 'aine' }).join('\n');
+    assert(L.includes('具体设定和讨论内容他不知道') && !L.includes('2030'), '只知道有这么个构想，不知道内容');
+    assert(I.ideasKnownBy(t, 'vin', '1890-05-25').length === 1, '送插画的人当然知道');
+    assert.equal(t.ideaTalks[2].points[0].adopted, 'fulfilled');
+    assert(I.ideasKnownBy(t, 'mir', '1890-05-25').find(k => k.project.title === '性别小说').talks.length === 1, '米尔博在场过，不降成只听说');
+    ok('顺带提起的构想：在场者只知道有这么回事；答应帮忙与兑现可以记');
+}
 console.log('回归测试全部通过');

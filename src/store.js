@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS = {
     injectMaxItems: 12,
     injectMaxRumors: 5,
     panelOpacity: 90,
+    includeHidden: true,
     knowPublic: 'reads',
     clipDays: 3,
     loreMaxChars: 1500,
@@ -99,6 +100,8 @@ export function defaultState() {
         assumed: [], // 主角以为某人 / 某圈子怎么看他
         publicImages: [], // 各读者圈子的公众形象（AI 依据公开材料整理）
         percReviews: [], // 认知对照分析（AI）
+        projects: [], // 创作构想（不是作品，不进阅读/名声）
+        ideaTalks: [], // 灵感讨论：谁在场、谁提了什么、采纳没有
         reputation: {},
         pendingMerge: [],
         log: [],

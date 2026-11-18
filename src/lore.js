@@ -9,6 +9,7 @@ import { clog } from './console.js';
 import { RESPECT, FOLLOW } from './analysis.js';
 import { factsKnownBy, perceptionsOf, claimsVisible, PERC_KIND, FACT_VIA } from './perception.js';
 import { latestImage, SPREAD } from './image.js';
+import { ideaLoreLine } from './ideas.js';
 
 export const LORE_TAG = '【报刊回声】';
 const CLOSE = ['陌生', '认识', '朋友', '至交'];
@@ -29,6 +30,8 @@ export function personEntry(st, p, max = 0) {
     }
     const kf = factsKnownBy(st, p.id, st.currentDate);
     L.push(kf.length ? `他知道的主角私事：${kf.map(x => `${x.fact.text}（${FACT_VIA[x.via] || '公开'}${x.believes ? '' : '，半信半疑'}）`).join('；')}。这些他会守分寸，不会随便对别人说。` : '他不知道主角的私人情况（身世、国籍、母语等），不会提起，也不会猜成事实。');
+    const il = ideaLoreLine(st, p, st.currentDate);
+    if (il) L.push(il);
     const latest = {};
     for (const b of perceptionsOf(st, p.id, { before: st.currentDate ? st.currentDate + 'z' : null })) latest[b.topic] = b;
     if (Object.keys(latest).length) L.push('他对作者的看法：' + Object.values(latest).map(b => `${b.belief}（${PERC_KIND[b.kind]}）`).join('；'));

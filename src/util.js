@@ -81,3 +81,18 @@ export function truncate(s, n) {
     s = String(s ?? '');
     return s.length > n ? s.slice(0, n) + '…' : s;
 }
+
+/**
+ * 是不是剧情楼层。酒馆“隐藏楼层”只是把 is_system 设为 true，内容还是剧情；
+ * 真正的系统提示（帮助、欢迎语、斜杠命令结果）会带 extra.type，且名字通常是 SillyTavern System。
+ * includeHidden=false 时，隐藏的楼层也不算。
+ */
+export function isStoryMessage(m, includeHidden = true) {
+    if (!m || typeof m.mes !== 'string' || !m.mes.trim()) return false;
+    if (!m.is_system) return true;
+    if (!includeHidden) return false;
+    const type = m.extra?.type;
+    if (type && type !== 'narrator') return false;
+    if (/^SillyTavern System$/i.test(m.name || '')) return false;
+    return true;
+}

@@ -8,6 +8,7 @@ import { LAYERS, FORMS, CIRCLES, PERIODICITY, byId, READ_DONE } from './engine.j
 import { weekdayZh, yearOf } from './date.js';
 import { eraBrief } from './era.js';
 import { factsKnownBy, perceptionsOf, claimsVisible, PERC_KIND } from './perception.js';
+import { ideasKnownBy } from './ideas.js';
 import { cardText, generateOpinion, stanceLines, stylePrefLines, claimLines, RESPECT, FOLLOW } from './analysis.js';
 
 export { eraBrief };
@@ -79,6 +80,8 @@ ${eraBrief(era)}
         const kf = factsKnownBy(state, person.id, ev.date);
         if (kf.length) lines.push(`  他私下知道的主角情况（${ev.layer === 'private_letter' ? '私信里可以按交情提到' : '这是公开文章：绝不能写出来，也不能暗示'}）：${kf.map(x => x.fact.text).join('；')}`);
         else lines.push('  他不知道主角的任何私人情况（身世、国籍、母语等），文中不得涉及。');
+        const ik = ideasKnownBy(state, person.id, ev.date).filter(k => work && k.project.workId === work.id);
+        if (ik.length) lines.push(`  他在作品发表前听主角聊过这部作品的构想（${ik.flatMap(k => k.talks.map(t => t.date)).filter(Boolean).join('、')}）${ev.layer === 'private_letter' ? '：私信里可以提起当初聊的，对照成品说哪里写出来了、哪里没有；不保证他满意' : '：这是公开文章，不能透露私下聊过构想，也不能因此替作品说好话'}。他当时说过：${ik.flatMap(k => k.talks.flatMap(t => (t.points || []).filter(p => p.by === person.id).map(p => p.text))).slice(0, 4).join('；') || '（没提具体意见）'}`);
         const pb = perceptionsOf(state, person.id, { before: addDayStr(ev.date) }).slice(-5);
         if (pb.length) lines.push(`  他对作者的认知：${pb.map(b => `${b.belief}（${PERC_KIND[b.kind]}）`).join('；')}`);
         lines.push(`  与主角私交：${['陌生', '认识', '朋友', '至交'][person.closeness || 0]}；${pen?.knownBy?.includes(person.id) || person.knowsIdentity ? '知道笔名背后是谁' : '不知道笔名背后是谁'}`);

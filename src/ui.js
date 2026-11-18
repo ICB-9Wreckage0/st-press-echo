@@ -1,6 +1,6 @@
 // ui.js — 面板界面（纯 DOM，不依赖框架）
 
-import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON } from './util.js';
+import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON, isStoryMessage } from './util.js';
 import { weekdayZh, normalizeISO, yearOf, cmp, addDays, diffDays, pickStoryDate } from './date.js';
 import {
     FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, knownToUser, knownSince, repLabel, fameLabel, esteemLabel, FAME_LEVELS, recomputeReputation, repBreakdown, repOrphans, fixRepOrphans, setStatus, rerollWork, advanceTo, byId, columnSlots,
@@ -19,6 +19,7 @@ import { extractFromText, loadWorldbookText } from './extract.js';
 import { callLLM, listModels } from './llm.js';
 import { suggestRelations, acceptRelSuggestion, CERTAINTY, checkOutlets, acceptOutletCheck, fmtOutletVal, OUT_FIELDS } from './relsuggest.js';
 import { Fab } from './fab.js';
+import { PROJECT_STAGES, POINT_KINDS, ADOPT, ME, blankProject, blankTalk, blankPoint, talkPeople, normProject, normTalk } from './ideas.js';
 import { FACT_TOPICS, FACT_VIA, PERC_KIND, PERC_TOPICS, factsKnownBy, perceptionsOf, blankFact } from './perception.js';
 import { perceptionMatrix, latestImage, publicPieces, activeCircles, generatePublicImage, reviewPerceptions, manualPerception, blankSelf, blankAssumed, SELF_MODE, SPREAD, REVIEW_TYPE } from './image.js';
 import { workTimeline, timelineSvg, networkData, visibleNetwork, layoutNetwork, networkSvg, paperHtml, paperDates, PAPER_CSS, outletOriginal, frDate, paperMissingFr, paperItems } from './views.js';
@@ -733,7 +734,7 @@ function planSegments(st, by, size) {
         let running = null, cur = null;
         const hc = getSettings().headChars;
         chat.forEach((m, i) => {
-            if (!m || m.is_system || typeof m.mes !== 'string') return;
+            if (!isStoryMessage(m, getSettings().includeHidden !== false)) return;
             const pick = pickStoryDate(m.mes, running, { maxJumpDays: 400, headChars: hc });
             if (pick) running = pick.iso;
             if (!cur) cur = { fromMes: i, toMes: i, chars: 0, floors: 0, endDate: null };
@@ -787,7 +788,10 @@ function backfillBody(st) {
           ${segs.map(segLine).join('')}`;
     }
     const sizeHint = { floors: '每段多少楼', chars: '每段多少字', days: '每段多少天（故事内）' };
-    return `<div class="pe-muted">从最早的作品（${h(pubs[0])}）起，按规则把到 ${h(st.currentDate)} 为止的经过推演一遍。可以按聊天楼层、文本量或故事天数分段，一段一段推，每段推完先看结果再继续。手动录入和导入的记录、已入账的都保留；之前推演出但没入账的会重新生成。</div>
+    const chatAll = globalThis.SillyTavern?.getContext?.()?.chat || [];
+    const hidN = chatAll.filter(m => m?.is_system && isStoryMessage(m, true)).length;
+    const hidLine = hidN ? `<div class="pe-muted">聊天共 ${chatAll.length} 楼，其中隐藏了 ${hidN} 楼：${getSettings().includeHidden !== false ? '隐藏的楼层照样会读（按楼层分段时也算在内）' : '按设置不读隐藏的楼层（设置 · 故事日期 · 读取隐藏的楼层）'}。</div>` : '';
+    return `<div class="pe-muted">从最早的作品（${h(pubs[0])}）起，按规则把到 ${h(st.currentDate)} 为止的经过推演一遍。可以按聊天楼层、文本量或故事天数分段，一段一段推，每段推完先看结果再继续。手动录入和导入的记录、已入账的都保留；之前推演出但没入账的会重新生成。</div>${hidLine}
       <div class="pe-toolbar">
         <label class="pe-inline-field">补什么 <select id="pe-bf-mode"><option value="hidden" ${bfForm.mode === 'hidden' ? 'selected' : ''}>只补看不见的部分（推荐）</option><option value="all" ${bfForm.mode === 'all' ? 'selected' : ''}>连公开报道和私信也补（逐条审核）</option></select></label>
         <label class="pe-inline-field">分段 <select id="pe-bf-by"><option value="floors" ${bfForm.by === 'floors' ? 'selected' : ''}>按聊天楼层</option><option value="chars" ${bfForm.by === 'chars' ? 'selected' : ''}>按文本量</option><option value="days" ${bfForm.by === 'days' ? 'selected' : ''}>按故事天数</option></select></label>
@@ -1132,6 +1136,7 @@ function txtImportBlock(st) {
 
 function works(st) {
     return txtImportBlock(st)
+        + ideasBlock(st)
         + listBlock('作品', 'work', [...st.works].sort((a, b) => cmp(a.pubDate || '9', b.pubDate || '9')), WORK_SPEC, st, w => `${penChip(st, w.pennameId)} <b>${bt(w.title)}</b> <small>${h(FORMS[w.form] || '')} · ${h(byId(st.outlets, w.outletId)?.name || '')} · ${h(w.pubDate || '未定日期')}${w.datePrecision ? ({ xun: '（只知道旬）', month: '（只知道月份）', noLaterThan: '（不晚于）' }[w.datePrecision] || '') : ''}${srcLen(st, w) ? ` · 原文 ${srcLen(st, w)} 字` : ''}${w.evidence ? ' · 有证据卡' : ''}${(w.claims || []).length ? ` · 主张 ${w.claims.length}` : ''}</small>`, w => penColor(st, w.pennameId) || 'var(--pe-border)', st.pennames.length > 1 ? `<div class="pe-legend">${st.pennames.map(p => penChip(st, p.id)).join('')}</div>` : '', w => `<button data-act="tl-work" data-id="${w.id}" title="这部作品到今天为止的反响：谁哪天读到、哪天见报、哪天来信、在哪里被谈起">时间线</button><button class="pe-primary" data-act="sim-work" data-id="${w.id}" title="谁可能读到、会怎么反应；也可以假设改投别的刊物">推演</button>`)
         + listBlock('笔名', 'penname', st.pennames, PEN_SPEC, st, p => `${penChip(st, p.id)} ${p.owner ? '<small>（' + h(p.owner) + '）</small>' : ''} ${p.publicIdentityKnown ? '<small class="pe-tag">身份已公开</small>' : ''}`, p => penColor(st, p.id));
 }
@@ -1364,8 +1369,46 @@ function era(st, s) {
     </section>`;
 }
 
-const KIND_LABEL = { pennames: '笔名', outlets: '刊物', persons: '人物', works: '作品', reactions: '已发生的反响', readings: '阅读记录', rumors: '传闻', eraNotes: '年代笔记', privateFacts: '主角的私人信息', selfImage: '主角的自我认知', assumed: '主角以为别人怎么看他', perceptions: '别人对作者的看法' };
+const KIND_LABEL = { pennames: '笔名', outlets: '刊物', persons: '人物', works: '作品', reactions: '已发生的反响', readings: '阅读记录', rumors: '传闻', eraNotes: '年代笔记', privateFacts: '主角的私人信息', selfImage: '主角的自我认知', assumed: '主角以为别人怎么看他', perceptions: '别人对作者的看法', creativeProjects: '创作构想', ideaDiscussions: '灵感讨论' };
 const estCalls = () => materials.reduce((n, m) => n + chunkMaterial(m.text).length, 0);
+
+// ———— 整理指针：记住聊天已经整理到哪一楼（楼号即酒馆的 #编号） ————
+const mesHash = m => { const t = String(m?.mes || '').slice(0, 400); let x = 0x811c9dc5; for (let i = 0; i < t.length; i++) { x ^= t.charCodeAt(i); x = Math.imul(x, 0x01000193) >>> 0; } return x.toString(36); };
+const chatNow = () => globalThis.SillyTavern?.getContext?.()?.chat || [];
+/** 指针现在指向哪一楼：楼层删过、换过回复时，按那一楼的内容在附近找回来 */
+function orgPointer(st) {
+    const chat = chatNow();
+    const mk = st.orgMark;
+    if (!mk) return { mes: -1, fresh: chat.length, ok: true, none: true };
+    let mes = mk.mes, ok = chat[mes] && mesHash(chat[mes]) === mk.hash;
+    if (!ok && mk.hash) for (let d = 1; d <= 80 && !ok; d++) for (const j of [mk.mes - d, mk.mes + d]) if (chat[j] && mesHash(chat[j]) === mk.hash) { mes = j; ok = true; break; }
+    if (mes > chat.length - 1) mes = chat.length - 1;
+    return { mes, fresh: Math.max(0, chat.length - 1 - mes), ok, moved: ok && mes !== mk.mes };
+}
+function setOrgMark(st, mes, why = '') {
+    const chat = chatNow();
+    if (mes < 0) { st.orgMark = null; return; }
+    mes = Math.min(mes, chat.length - 1);
+    st.orgMark = { mes, hash: mesHash(chat[mes]), at: new Date().toISOString(), story: st.currentDate || '', why };
+}
+function chatMaterial(from, to, label) {
+    const chat = chatNow();
+    const inc = getSettings().includeHidden !== false;
+    const msgs = chat.slice(from, to + 1);
+    const hid = msgs.filter(m => m?.is_system && isStoryMessage(m, true)).length;
+    return { id: uid(), label: `${label}（#${from}–#${to}，${msgs.length} 楼${hid ? (inc ? `，含隐藏 ${hid} 楼` : `，不含隐藏的 ${hid} 楼`) : ''}）`, kind: '聊天记录', text: chatToText(msgs, inc), range: { from, to } };
+}
+function pointerBlock(st) {
+    const chat = chatNow();
+    if (!chat.length) return '';
+    const p = orgPointer(st);
+    const mk = st.orgMark;
+    const when = mk?.at ? new Date(mk.at).toLocaleString('zh-CN', { hour12: false }) : '';
+    const status = p.none ? '还没整理过当前聊天（或没记下来）' : `已整理到 <b>#${p.mes}</b>${mk.story ? `（故事日期 ${h(mk.story)}）` : ''}<span class="pe-muted">，${h(when)}${mk.why ? ' · ' + h(mk.why) : ''}</span>${p.moved ? `<span class="pe-muted">（楼层有增删，按内容找回到 #${p.mes}）</span>` : ''}${!p.ok ? '<span class="pe-warn">（原来那一楼的内容变了：删过楼或换过回复，请确认指针位置）</span>' : ''}`;
+    return `<div class="pe-callout pe-callout-accent pe-orgptr"><div>📍 整理指针：${status}。之后新增 <b>${p.fresh}</b> 楼（共到 #${chat.length - 1}）。</div>
+      <div class="pe-actions"><div class="pe-actions-extra"><input id="pe-org-mark" type="number" min="-1" max="${chat.length - 1}" placeholder="楼号" style="width:7em"><button data-act="org-mark-set" title="把指针设到这一楼：表示这一楼及之前都已经整理过（比如你刚导入了外面整理好的整理包）">设到这一楼</button><button data-act="org-mark-end" title="当前所有楼层都已整理过">设为最新一楼</button>${mk ? '<button data-act="org-mark-clear">清除</button>' : ''}</div>
+      <button class="pe-primary" data-act="org-continue" ${p.fresh ? '' : 'disabled'} title="把指针之后的新楼层加入材料；整理结果应用后，指针自动移到最新一楼">从指针处继续（${p.fresh} 楼）</button></div></div>`;
+}
 
 function organizerBlock(st) {
     const calls = estCalls();
@@ -1373,6 +1416,7 @@ function organizerBlock(st) {
     return `${st.pendingBundle ? bundlePreview(st) : ''}
     <section class="pe-drop" id="pe-org-drop">
       <h4>一键整理 <span class="pe-muted">把材料放进来，交给已连接的模型整理成人物、刊物、作品和已发生的反响</span></h4>
+      ${pointerBlock(st)}
       <div class="pe-toolbar">
         <label class="menu_button pe-file pe-primary">添加文件<input type="file" id="pe-org-files" multiple accept=".txt,.md,.json,.jsonl,text/plain,application/json" hidden></label>
         <button data-act="org-chat">加入当前聊天记录</button>
@@ -1449,7 +1493,7 @@ async function addOrgFiles(files) {
             const text = await readTextFile(f);
             if (/\.jsonl$/i.test(f.name)) {
                 const rows = parseJsonl(text);
-                materials.push({ id: uid(), label: f.name, kind: '聊天记录', text: chatToText(rows) });
+                materials.push({ id: uid(), label: f.name, kind: '聊天记录', text: chatToText(rows, getSettings().includeHidden !== false) });
                 continue;
             }
             if (/\.json$/i.test(f.name)) {
@@ -1580,6 +1624,7 @@ const SETTINGS_SPEC = [
     { key: 'knowPublic', label: '公开见报的文章，主角怎么知道', type: 'select', options: { reads: '常读的当天，其余靠剪报', all: '见报当天就知道（旧）', marked: '只算我标了读到的' }, hint: '见报不等于主角读到。“常读”在刊物资料里勾；不看报的主角选“只算我标了读到的”。剧情里录入的、转到主角手上的读者来信不受影响；整理材料时聊天里提到了推演里的某篇文章，会自动标为读到；也可以在账本里点“主角已读到”' },
     { key: 'clipDays', label: '剪报几天后送到', type: 'number', hint: '0 = 没有剪报服务：不常读的报刊上的文章（包括各报转载汇总），主角要等聊天里提到或你标记才知道' },
     { key: 'panelOpacity', label: '面板不透明度', type: 'range', min: 0, max: 100, step: 5, unit: '%', hint: '拖动时立刻生效。100% 完全挡住后面的聊天文字；0% 完全跟随酒馆主题（主题半透明时会透出后面的字）' },
+    { key: 'includeHidden', label: '读取隐藏的楼层', type: 'checkbox', hint: '用“隐藏楼层”省 token 时，被隐藏的楼层仍然是剧情：回溯推演分段、一键整理当前聊天、AI 补完参考的最近剧情都会读它们。关掉就只读没隐藏的' },
     { key: 'injectEnabled', label: '向主对话注入报刊现状', type: 'checkbox' },
     { key: 'injectPosition', label: '注入位置', type: 'select', options: { 0: '系统提示词内', 1: '聊天内（按深度）', 2: '最前面' }, numeric: true },
     { key: 'injectDepth', label: '注入深度', type: 'number' },
@@ -1611,7 +1656,7 @@ const SETTINGS_SPEC = [
 
 const SET_GROUPS = [
     { title: '基本', desc: '插件开关、审核方式与面板外观', keys: ['enabled', 'autoApprove', 'panelOpacity'] },
-    { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvanceMode', 'autoAdvanceDays', 'maxJumpDays', 'headChars'] },
+    { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvanceMode', 'autoAdvanceDays', 'maxJumpDays', 'headChars', 'includeHidden'] },
     { title: '世界书', desc: '让主对话里的 NPC 知道自己读过什么、怎么看', keys: ['loreEnabled', 'loreAuto', 'loreBook', 'loreScope', 'loreWorks', 'loreMaxChars', 'loreBindChat'] },
     { title: '书信簿联动', desc: '与 st-epistolary 书信簿插件配合', keys: ['epiEnabled', 'epiSyncDate', 'epiSendAuto'] },
     { title: '推演', desc: '只影响概率，不调用模型', keys: ['intensity', 'rumorHalfLife'], extra: 'layerMult' },
@@ -1806,9 +1851,10 @@ async function onClick(e) {
         case 'org-chat': {
             const c = globalThis.SillyTavern?.getContext?.();
             const n = parseInt(document.getElementById('pe-org-last')?.value, 10);
-            const msgs = (c?.chat || []).slice(n > 0 ? -n : 0);
-            if (!msgs.length) return toast('warning', '当前聊天是空的');
-            materials.push({ id: uid(), label: `当前聊天${n > 0 ? `最近 ${n} 楼` : `全部 ${msgs.length} 楼`}`, kind: '聊天记录', text: chatToText(msgs) });
+            const all = c?.chat || [];
+            if (!all.length) return toast('warning', '当前聊天是空的');
+            const from = n > 0 ? Math.max(0, all.length - n) : 0;
+            materials.push(chatMaterial(from, all.length - 1, n > 0 ? `当前聊天最近 ${n} 楼` : '当前聊天全部'));
             refresh(); break;
         }
         case 'org-paste': {
@@ -1820,13 +1866,37 @@ async function onClick(e) {
         case 'org-del': materials = materials.filter(m => m.id !== btn.dataset.id); refresh(); break;
         case 'org-clear': materials = []; refresh(); break;
         case 'org-stop': orgAbort?.abort(); toast('info', '当前这一段完成后停止'); break;
+        case 'org-continue': {
+            const p = orgPointer(st);
+            const chat = chatNow();
+            if (!p.fresh) return toast('info', '指针之后没有新楼层');
+            if (materials.some(m => m.range)) materials = materials.filter(m => !m.range);
+            materials.push(chatMaterial(p.mes + 1, chat.length - 1, '从指针处继续'));
+            refresh(); break;
+        }
+        case 'org-mark-set': {
+            const v = parseInt(document.getElementById('pe-org-mark')?.value, 10);
+            if (!Number.isFinite(v)) return toast('warning', '填楼号（酒馆消息上的 #编号）');
+            setOrgMark(st, v, '手动设定'); commit(v < 0 ? '指针已清除' : `指针设到 #${st.orgMark.mes}`); break;
+        }
+        case 'org-mark-end': setOrgMark(st, chatNow().length - 1, '手动设为最新'); commit(`指针设到 #${st.orgMark.mes}`); break;
+        case 'org-mark-clear': st.orgMark = null; commit('指针已清除'); break;
         case 'org-run': {
             if (!materials.length) break;
+            {   // 先说清楚要调用几次：整段几千楼的聊天一次整理，可能是几百次调用
+                const n = estCalls();
+                const chars = materials.reduce((a, m) => a + m.text.length, 0);
+                if (n > 5 && !confirm(`材料共约 ${(chars / 10000).toFixed(1)} 万字，要分 ${n} 块整理，调用 AI ${n} 次。\n\n聊天很长时，建议只整理还没整理过的那段（“当前聊天”旁边填最近多少楼），或者先导入已有的整理包。\n\n确定继续？`)) break;
+            }
             orgAbort = new AbortController();
             refresh();
             try {
+                const range = materials.filter(m => m.range).map(m => m.range);
                 const b = await organize(st, materials, s, m => setBusy(m), orgAbort.signal);
+                const prevRange = st.pendingBundle?.chatRange;
                 st.pendingBundle = mergeBundles(st.pendingBundle, b);
+                if (!orgAbort.signal.aborted && range.length) st.pendingBundle.chatRange = { from: Math.min(...range.map(r => r.from), prevRange?.from ?? Infinity), to: Math.max(...range.map(r => r.to), prevRange?.to ?? -1) };
+                else if (prevRange) st.pendingBundle.chatRange = prevRange;
                 if (!orgAbort.signal.aborted) materials = [];
                 logLine(st, `一键整理：${['persons', 'works', 'reactions'].map(k => `${KIND_LABEL[k]} ${(b[k] || []).length}`).join('，')}`);
             } finally { orgAbort = null; setBusy(''); }
@@ -1856,6 +1926,7 @@ async function onClick(e) {
             const dateMode = $('#pe-bundle-datemode')?.value || 'set';
             const rep = applyBundle(st, b, { kinds, dateMode, settings: s, era: getEra(), sync: !!$('#pe-bundle-sync')?.checked });
             st.pendingBundle = null;
+            if (b.chatRange && (!st.orgMark || b.chatRange.to > orgPointer(st).mes)) { setOrgMark(st, b.chatRange.to, `整理了 #${b.chatRange.from}–#${b.chatRange.to}`); rep.lines.push(`整理指针移到 #${b.chatRange.to}`); }
             syncEraYear(st);
             if (rep.rerolled && st.currentDate) advanceTo(st, st.currentDate, s, getEra());
             if (txtPlan.length) {
@@ -2041,6 +2112,7 @@ async function onClick(e) {
         case 'bitem-edit': case 'bitem-del': case 'bitem-save': case 'bitem-cancel': case 'bundle-edit-all': case 'bundle-save-json': bundleItemAction(act, st, btn); break;
         case 'sg-accept': case 'sg-reject': case 'sg-suggest': await suggestAction(act, st, s, btn); break;
         case 'oc-run': case 'oc-accept': case 'oc-reject': await outletCheckAction(act, st, s, btn); break;
+        case 'cp-new': case 'cp-edit': case 'cp-del': case 'cp-save': case 'it-new': case 'it-edit': case 'it-del': case 'it-pres-add': case 'it-pt-add': case 'it-row-del': case 'it-save': ideasAction(act, st, btn); break;
         case 'rs-run': case 'rs-accept': case 'rs-guess': case 'rs-reject': case 'rs-accept-doc': await relSuggestAction(act, st, s, btn); break;
         case 'lore-sync': {
             setBusy('同步世界书');
@@ -2825,7 +2897,7 @@ function lastFillTo(st, prev = false) {
 function chatTail(n = 8, max = 5000, skip = 0) {
     const c = globalThis.SillyTavern?.getContext?.();
     const all = c?.chat || [];
-    const msgs = all.slice(0, Math.max(0, all.length - skip)).filter(m => m?.mes && !m.is_system).slice(-n);
+    const msgs = all.slice(0, Math.max(0, all.length - skip)).filter(m => isStoryMessage(m, getSettings().includeHidden !== false)).slice(-n);
     let t = msgs.map(m => `${m.name || ''}：${m.mes}`).join('\n\n');
     if (t.length > max) t = '……' + t.slice(-max);
     return t;
@@ -2899,6 +2971,7 @@ function offscreenBlock(st) {
 
 // ———————————— 整理包条目的编辑 ————————————
 const BF_LABEL = { topic: '类别', knownBy: '知情者（JSON）', public: '已公开', publicSince: '公开日期', name: '名字', title: '作品名', aliases: '别名', owner: '真实作者', publicIdentityKnown: '身份已公开', knownBy: '知道作者身份的人', originalName: '原文名', periodicity: '出刊周期', weekday: '出刊星期（0=周日）', monthDays: '出刊日', circle: '读者圈子', tier: '影响力 1–5', politics: '倾向', real: '真实存在', note: '备注', roles: '身份', outlets: '供稿刊物', reads: '常读刊物', interests: '关注', likes: '欣赏', dislikes: '反感', closeness: '与主角私交', knowsIdentity: '知道主角是作者', monthlyCapacity: '每月公开文章上限', columnWeekday: '专栏星期（0=周日）', notes: '备注', relations: '熟人关系（JSON）', stances: '思想立场（JSON）', stylePrefs: '文体偏好（JSON）', penname: '署名', form: '形式', outlet: '刊物', pubDate: '发表日期', endDate: '连载结束日', datePrecision: '日期精度', themes: '题材', summary: '概要', versionOf: '另一版本的作品名', shelf: '长期流通（yes/no/空）', shelfUntil: '流通到', claims: '主张（JSON）', date: '日期', layer: '类型', person: '人物', work: '作品', polarity: '褒贬', count: '数量', evidence: '依据', read: '读到什么程度', text: '内容', strength: '热度 0–1', mode: '类型', belief: '看法', since: '起始日期', kind: '来源' };
+Object.assign(BF_LABEL, { order: '写作顺序', mentions: '顺带提到的构想', stage: '进度', since: '第一次提起', premise: '设定与情节', question: '核心问题', forms: '考虑过的形式', project: '属于哪个构想', time: '时间', place: '地点', ref: '出处', present: '在场的人', points: '各人观点（JSON：by / kind / text / adopted）' });
 const BF_SKIP = new Set(['rolesGiven']);
 const BF_LONG = new Set(['summary', 'notes', 'note', 'text', 'evidence']);
 const BF_ENUM = {
@@ -2906,7 +2979,7 @@ const BF_ENUM = {
     layer: () => Object.fromEntries(Object.entries(LAYERS).map(([k, v]) => [k, v.label])), polarity: () => ({ 1: '肯定', 0: '褒贬参半', '-1': '批评' }),
     read: () => ({ finished: '读完', skimmed: '读了一部分' }), datePrecision: () => ({ '': '精确到日', xun: '只知道旬', month: '只知道月份', noLaterThan: '不晚于' }),
     closeness: () => ({ '': '（不改）', 0: '陌生', 1: '认识', 2: '朋友', 3: '至交' }),
-    mode: () => SELF_MODE, kind: () => PERC_KIND,
+    mode: () => SELF_MODE, kind: () => PERC_KIND, stage: () => PROJECT_STAGES,
     topic: k => Object.fromEntries((k === 'privateFacts' ? FACT_TOPICS : PERC_TOPICS).map(t => [t, t])),
 };
 function bitemSpec(k, x) {
@@ -2916,7 +2989,7 @@ function bitemSpec(k, x) {
         if (BF_ENUM[f]) return { key: f, label, type: 'select', options: BF_ENUM[f](k), numeric: f === 'polarity' || f === 'closeness' };
         if (typeof v === 'boolean' || ['publicIdentityKnown', 'real', 'knowsIdentity'].includes(f)) return { key: f, label, type: 'checkbox' };
         if (Array.isArray(v) && v.some(y => y && typeof y === 'object')) return { key: f, label, type: 'textarea', rows: 4, json: true };
-        if (['relations', 'stances', 'stylePrefs', 'claims', 'knownBy'].includes(f)) return { key: f, label, type: 'textarea', rows: 3, json: true };
+        if (['relations', 'stances', 'stylePrefs', 'claims', 'knownBy', 'points'].includes(f)) return { key: f, label, type: 'textarea', rows: 3, json: true };
         if (Array.isArray(v)) return { key: f, label, type: 'tags', numeric: f === 'monthDays' };
         if (typeof v === 'number' || ['tier', 'count', 'strength', 'weekday', 'columnWeekday', 'monthlyCapacity'].includes(f)) return { key: f, label, type: 'number', step: f === 'strength' ? 0.05 : 1 };
         if (BF_LONG.has(f)) return { key: f, label, type: 'textarea', rows: 2 };
@@ -3488,4 +3561,139 @@ function pcForm(id) {
     const root = document.getElementById(id); const o = {};
     root?.querySelectorAll('[data-pcf]').forEach(el => { o[el.dataset.pcf] = el.value.trim(); });
     return o;
+}
+
+// ———————————— 创作构想与灵感讨论 ————————————
+const personOpts = (st, sel, me = false) => `${me ? `<option value="${ME}" ${sel === ME ? 'selected' : ''}>主角</option>` : '<option value="">（选择人物）</option>'}${st.persons.map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${h(p.name)}</option>`).join('')}`;
+function presRow(st, id) {
+    return `<div class="pe-kb-row pe-pres-row"><select class="text_pole" data-k2="personId">${personOpts(st, id)}</select><button class="menu_button pe-mini" data-act="it-row-del">✕</button></div>`;
+}
+function pointRow(st, p) {
+    return `<div class="pe-kb-row pe-pt-row">
+      <select class="text_pole" data-k2="by">${personOpts(st, p.by || ME, true)}</select>
+      <select class="text_pole" data-k2="kind">${Object.entries(POINT_KINDS).map(([a, b]) => `<option value="${a}" ${a === p.kind ? 'selected' : ''}>${b}</option>`).join('')}</select>
+      <input type="text" class="text_pole pe-pt-text" data-k2="text" value="${h(p.text || '')}" placeholder="说了什么，一句话">
+      <select class="text_pole" data-k2="adopted" title="建议：主角采纳没有；答应帮忙：兑现没有（主角自己的话不用填）">${Object.entries(ADOPT).map(([a, b]) => `<option value="${a}" ${a === (p.adopted || 'pending') ? 'selected' : ''}>${b}</option>`).join('')}</select>
+      <button class="menu_button pe-mini" data-act="it-row-del">✕</button></div>`;
+}
+function projectEditor(st, p) {
+    return `<div class="pe-editor pe-cp-editor"><div class="pe-editor-head">${(st.projects || []).some(x => x.id === p.id) ? '编辑' : '新增'}创作构想</div>
+      <div class="pe-form">
+        <div class="pe-field"><label>暂名</label><input type="text" class="text_pole" data-f="title" value="${h(p.title)}" placeholder="如：变性小说（暂名）"></div>
+        <div class="pe-field"><label>进度</label><select class="text_pole" data-f="stage">${Object.entries(PROJECT_STAGES).map(([a, b]) => `<option value="${a}" ${a === p.stage ? 'selected' : ''}>${b}</option>`).join('')}</select></div>
+        <div class="pe-field"><label>打算用的署名</label><select class="text_pole" data-f="pennameId"><option value="">（未定 / 新笔名）</option>${(st.pennames || []).map(x => `<option value="${x.id}" ${x.id === p.pennameId ? 'selected' : ''}>${h(x.name)}</option>`).join('')}</select></div>
+        <div class="pe-field"><label>新笔名的备选</label><input type="text" class="text_pole" data-f="penNote" value="${h(p.penNote || '')}" placeholder="如：Élise / Mademoiselle E."></div>
+        <div class="pe-field"><label>第一次提起</label><input type="text" class="text_pole" data-f="since" value="${h(p.since || '')}" placeholder="YYYY-MM-DD"></div>
+        <div class="pe-field"><label>题材</label><input type="text" class="text_pole" data-f="themes" value="${h((p.themes || []).join('、'))}" placeholder="用顿号分隔"></div>
+        <div class="pe-field pe-wide"><label>设定与情节</label><textarea class="text_pole" data-f="premise" rows="2">${h(p.premise || '')}</textarea></div>
+        <div class="pe-field pe-wide"><label>想探讨的核心问题</label><textarea class="text_pole" data-f="question" rows="2">${h(p.question || '')}</textarea></div>
+        <div class="pe-field pe-wide"><label>写作顺序 / 排期</label><input type="text" class="text_pole" data-f="order" value="${h(p.order || '')}" placeholder="如：等《共和国的门》写完再写"></div>
+        <div class="pe-field pe-wide"><label>考虑过的形式</label><input type="text" class="text_pole" data-f="forms" value="${h(p.forms || '')}" placeholder="如：2100 年医生手记 / 2030 年书信体"></div>
+        <div class="pe-field"><label>写成后对应的作品</label><select class="text_pole" data-f="workId"><option value="">（还没写成）</option>${st.works.map(w => `<option value="${w.id}" ${w.id === p.workId ? 'selected' : ''}>${h(w.title)}</option>`).join('')}</select></div>
+        <div class="pe-field pe-wide"><label>备注</label><textarea class="text_pole" data-f="notes" rows="2">${h(p.notes || '')}</textarea></div>
+      </div>
+      <div class="pe-actions"><div class="pe-actions-extra"></div><button data-act="cancel-edit">取消</button><button class="pe-primary" data-act="cp-save">保存</button></div></div>`;
+}
+function talkEditor(st, t) {
+    return `<div class="pe-editor pe-it-editor"><div class="pe-editor-head">${(st.ideaTalks || []).some(x => x.id === t.id) ? '编辑' : '新增'}一次讨论</div>
+      <div class="pe-form">
+        <div class="pe-field"><label>日期</label><input type="text" class="text_pole" data-f="date" value="${h(t.date || '')}" placeholder="YYYY-MM-DD"></div>
+        <div class="pe-field"><label>时间</label><input type="text" class="text_pole" data-f="time" value="${h(t.time || '')}" placeholder="如 21:56–22:12"></div>
+        <div class="pe-field"><label>地点</label><input type="text" class="text_pole" data-f="place" value="${h(t.place || '')}"></div>
+        <div class="pe-field"><label>出处（楼层 / 编号）</label><input type="text" class="text_pole" data-f="ref" value="${h(t.ref || '')}" placeholder="如 AM0509"></div>
+      </div>
+      <div class="pe-field pe-wide"><label>在场的人 <small class="pe-muted">只有这里的人（和下面提过观点的人）知道这次聊了什么</small></label>
+        <div class="pe-pres-rows">${(t.present || []).map(id => presRow(st, id)).join('')}</div>
+        <div class="pe-row"><button class="menu_button" data-act="it-pres-add">＋ 添加在场者</button></div></div>
+      ${(st.projects || []).filter(p => p.id !== t.projectId).length ? `<div class="pe-field pe-wide"><label>顺带提到了别的构想 <small class="pe-muted">在场的人只会知道“主角有这么个构想”，不知道具体内容</small></label>
+        <div class="pe-row pe-it-mentions">${st.projects.filter(p => p.id !== t.projectId).map(p => `<label class="pe-check-inline"><input type="checkbox" value="${p.id}" ${(t.mentions || []).includes(p.id) ? 'checked' : ''}> ${h(p.title || '未命名')}</label>`).join('')}</div></div>` : ''}
+      <div class="pe-field pe-wide"><label>各人说了什么 <small class="pe-muted">最后一栏：建议采纳没有、答应的事兑现没有；聊天里没交代的就留“未定”</small></label>
+        <div class="pe-pt-rows">${(t.points || []).map(p => pointRow(st, p)).join('')}</div>
+        <div class="pe-row"><button class="menu_button" data-act="it-pt-add">＋ 添加一条</button></div></div>
+      <div class="pe-field pe-wide"><label>备注</label><textarea class="text_pole" data-f="notes" rows="2">${h(t.notes || '')}</textarea></div>
+      <div class="pe-actions"><div class="pe-actions-extra"></div><button data-act="cancel-edit">取消</button><button class="pe-primary" data-act="it-save">保存</button></div></div>`;
+}
+function talkCard(st, t, ed) {
+    if (ed?.kind === 'talk' && ed.id === t.id) return talkEditor(st, (st.ideaTalks || []).find(x => x.id === t.id) || ed.draft);
+    const ppl = talkPeople(t).map(id => personTag(byId(st.persons, id), '?')).join('、');
+    return `<div class="pe-it-card"><div class="pe-row"><b>${h(t.date || '日期不详')}</b> <small class="pe-muted">${h([t.time, t.place, t.ref].filter(Boolean).join(' · '))}</small><span class="pe-spacer"></span>
+        <button class="pe-mini" data-act="it-edit" data-id="${t.id}">改</button><button class="pe-mini" data-act="it-del" data-id="${t.id}">✕</button></div>
+      <div class="pe-muted">在场：${ppl || '只有主角'}</div>
+      ${(t.mentions || []).length ? `<div class="pe-muted">顺带提到：${t.mentions.map(id => h(byId(st.projects, id)?.title || '?')).join('、')}</div>` : ''}
+      ${(t.points || []).length ? `<ul class="pe-it-points">${t.points.map(p => `<li><b>${p.by === ME ? '主角' : h(byId(st.persons, p.by)?.name || '?')}</b> <span class="pe-chip">${h(POINT_KINDS[p.kind] || '')}</span> ${h(p.text)}${p.by !== ME ? ` <span class="pe-chip ${p.adopted === 'pending' ? '' : 'pe-chip-layer'}">${h(ADOPT[p.adopted] || '未定')}</span>` : ''}</li>`).join('')}</ul>` : ''}</div>`;
+}
+function ideasBlock(st) {
+    const ps = st.projects || [], ts = st.ideaTalks || [];
+    const ed = ['project', 'talk'].includes(editing?.kind) ? editing : null;
+    const newProj = ed?.kind === 'project' && !ps.some(x => x.id === ed.id) ? projectEditor(st, ed.draft) : '';
+    const card = p => {
+        if (ed?.kind === 'project' && ed.id === p.id) return projectEditor(st, p);
+        const mine = ts.filter(t => t.projectId === p.id).sort((a, b) => cmp(a.date || '', b.date || ''));
+        const pen = byId(st.pennames, p.pennameId);
+        const w = byId(st.works, p.workId);
+        const newTalk = ed?.kind === 'talk' && ed.draft?.projectId === p.id && !ts.some(x => x.id === ed.id) ? talkEditor(st, ed.draft) : '';
+        const heard = [...new Set(mine.flatMap(talkPeople))].map(id => byId(st.persons, id)?.name).filter(Boolean);
+        const heardOf = [...new Set(ts.filter(t => (t.mentions || []).includes(p.id)).flatMap(talkPeople))].map(id => byId(st.persons, id)?.name).filter(n => n && !heard.includes(n));
+        return `<div class="pe-cp-card pe-li-item" data-find="${h([p.title, p.premise, ...heard].join(' '))}">
+          <div class="pe-row"><b>${h(p.title || '未命名构想')}</b> <span class="pe-chip pe-chip-layer">${h(PROJECT_STAGES[p.stage] || '')}</span>${pen ? ' ' + penChip(st, pen.id) : p.penNote ? ` <small class="pe-muted">署名备选：${h(p.penNote)}</small>` : ''}${w ? ` → ${bt(w.title)}` : ''}<span class="pe-spacer"></span>
+            <button class="pe-mini" data-act="cp-edit" data-id="${p.id}">改</button><button class="pe-mini" data-act="cp-del" data-id="${p.id}">✕</button></div>
+          ${p.premise ? `<div>${h(p.premise)}</div>` : ''}
+          ${p.question ? `<div class="pe-muted">核心问题：${h(p.question)}</div>` : ''}
+          ${p.forms ? `<div class="pe-muted">形式：${h(p.forms)}</div>` : ''}
+          ${p.order ? `<div class="pe-muted">排期：${h(p.order)}</div>` : ''}
+          <div class="pe-muted">听过的人：${heard.length ? heard.map(h).join('、') : '还没跟人聊过'}${heardOf.length ? ` · 只听人提起过：${heardOf.map(h).join('、')}` : ''}${p.since ? ` · ${h(p.since)} 起` : ''}</div>
+          <div class="pe-it-list">${mine.map(t => talkCard(st, t, ed)).join('')}${newTalk}</div>
+          <div class="pe-actions"><div class="pe-actions-extra"></div><button data-act="it-new" data-project="${p.id}">＋ 记一次讨论</button></div></div>`;
+    };
+    return `<details class="pe-fold" ${ps.length || ed ? 'open' : ''}><summary>创作构想与灵感讨论 <span class="pe-muted">${ps.length} 个构想 · ${ts.length} 次讨论</span></summary>
+      <div class="pe-muted">还没写出来的东西：跟谁聊过、谁提了什么、采纳没有。只有在场的人知道；不算作品，不进阅读、反响和名声。等它写成发表、在这里关联上作品后，参与过讨论的人读到时会把这当背景——不保证评价更好，也可能因为“和当初聊的不一样”更挑剔。</div>
+      ${newProj}${ps.map(card).join('')}
+      <div class="pe-actions"><div class="pe-actions-extra"></div><button data-act="cp-new">＋ 新增构想</button></div></details>`;
+}
+function ideasAction(act, st, btn) {
+    const root = sel => document.querySelector(sel);
+    switch (act) {
+        case 'cp-new': { const p = blankProject(); p.since = st.currentDate || ''; editing = { kind: 'project', id: p.id, draft: p }; refresh(); return; }
+        case 'cp-edit': editing = { kind: 'project', id: btn.dataset.id }; refresh(); return;
+        case 'cp-del': {
+            const n = (st.ideaTalks || []).filter(t => t.projectId === btn.dataset.id).length;
+            if (!confirm(`删除这个构想？${n ? `（连同 ${n} 次讨论记录）` : ''}`)) return;
+            st.projects = (st.projects || []).filter(p => p.id !== btn.dataset.id);
+            st.ideaTalks = (st.ideaTalks || []).filter(t => t.projectId !== btn.dataset.id);
+            commit(); return;
+        }
+        case 'cp-save': {
+            const r = root('.pe-cp-editor'); if (!r) return;
+            const g = k => r.querySelector(`[data-f="${k}"]`).value;
+            if (!g('title').trim()) return toast('warning', '给构想起个暂名');
+            let p = (st.projects || []).find(x => x.id === editing.id);
+            if (!p) { p = editing.draft; st.projects = [...(st.projects || []), p]; }
+            Object.assign(p, normProject({ ...p, title: g('title').trim(), stage: g('stage'), pennameId: g('pennameId'), penNote: g('penNote').trim(), since: normalizeISO(g('since')) || '', themes: g('themes'), premise: g('premise').trim(), question: g('question').trim(), forms: g('forms').trim(), order: g('order').trim(), workId: g('workId'), notes: g('notes').trim() }));
+            if (p.workId && p.stage !== 'published') p.stage = 'published';
+            editing = null; commit('已保存'); return;
+        }
+        case 'it-new': { const t = blankTalk(btn.dataset.project); t.date = st.currentDate || ''; editing = { kind: 'talk', id: t.id, draft: t }; refresh(); return; }
+        case 'it-edit': editing = { kind: 'talk', id: btn.dataset.id }; refresh(); return;
+        case 'it-del': if (confirm('删除这次讨论记录？')) { st.ideaTalks = (st.ideaTalks || []).filter(t => t.id !== btn.dataset.id); commit(); } return;
+        case 'it-pres-add': root('.pe-it-editor .pe-pres-rows')?.insertAdjacentHTML('beforeend', presRow(st, '')); return;
+        case 'it-pt-add': root('.pe-it-editor .pe-pt-rows')?.insertAdjacentHTML('beforeend', pointRow(st, blankPoint())); return;
+        case 'it-row-del': btn.closest('.pe-kb-row')?.remove(); return;
+        case 'it-save': {
+            const r = root('.pe-it-editor'); if (!r) return;
+            const g = k => r.querySelector(`[data-f="${k}"]`).value.trim();
+            let t = (st.ideaTalks || []).find(x => x.id === editing.id);
+            const isNew = !t;
+            if (!t) t = editing.draft;
+            const v = { ...t, date: normalizeISO(g('date')) || '', time: g('time'), place: g('place'), ref: g('ref'), notes: g('notes'),
+                present: [...r.querySelectorAll('.pe-pres-row [data-k2="personId"]')].map(x => x.value).filter(Boolean),
+                mentions: [...r.querySelectorAll('.pe-it-mentions input:checked')].map(x => x.value),
+                points: [...r.querySelectorAll('.pe-pt-row')].map(x => ({ by: x.querySelector('[data-k2="by"]').value, kind: x.querySelector('[data-k2="kind"]').value, text: x.querySelector('[data-k2="text"]').value.trim(), adopted: x.querySelector('[data-k2="adopted"]').value })) };
+            if (!v.date) return toast('warning', '写一下哪天聊的');
+            Object.assign(t, normTalk(v));
+            if (isNew) st.ideaTalks = [...(st.ideaTalks || []), t];
+            const pr = byId(st.projects, t.projectId);
+            if (pr && (!pr.since || cmp(t.date, pr.since) < 0)) pr.since = t.date;
+            editing = null; commit('已保存。只有在场的人知道这次聊了什么'); return;
+        }
+    }
 }

@@ -25,6 +25,9 @@
   "selfImage": [{ "mode": "self", "topic": "文风与语言", "text": "主角怎么看自己（self），或在文章、序言、访谈里公开说过的话（claim）", "since": "哪天起", "penname": "针对哪个署名（可空）" }],
   "assumed": [{ "person": "主角以为谁（人物名；针对整个读者圈子时改填 circle）", "circle": "", "topic": "思想倾向", "belief": "主角以为对方觉得……", "since": "哪天起" }],
   "perceptions": [{ "person": "谁", "topic": "身份与背景", "belief": "此人对作者的一种看法（聊天里明确说出或写出的）", "kind": "inference", "date": "哪天表露的", "penname": "针对哪个署名（可空）", "evidence": "依据：原话或位置，40 字内" }],
+  "creativeProjects": [{ "title": "构想的暂名", "penname": "打算用的署名（可空）", "stage": "planning", "since": "第一次提起的日期", "themes": ["题材"], "premise": "设定与情节一句话", "question": "想探讨的核心问题", "forms": "考虑过的形式（如：2100 年医生手记 / 书信体）", "order": "写作顺序（如：等某作品写完再写）", "work": "已经写成并发表时，作品名（否则空）", "notes": "" }],
+  "ideaDiscussions": [{ "project": "构想的暂名（与 creativeProjects 一致）", "date": "YYYY-MM-DD", "time": "21:56–22:12（可空）", "place": "地点", "ref": "楼层或编号，如 AM0509", "present": ["在场的人（不含主角）"], "mentions": ["这次顺带提到的别的构想暂名"],
+      "points": [{ "by": "谁说的（主角写“主角”）", "kind": "suggestion", "text": "说了什么，一句话", "adopted": "pending" }] }],
   "eraNotes": [{ "title": "标题", "text": "与时代背景有关、后续写作要遵守的事实" }]
 }
 ```
@@ -46,6 +49,7 @@
 - selfImage（主角的自我认知）：mode=self 只是主角心里怎么看自己，谁都不知道；mode=claim 是公开说过的话（文章、序言、访谈），从 since 起读者都可能知道。topic 取：文风与语言、思想倾向、论证方式、知识背景、创作动机、公开回应与论战、身份与背景、名气与影响、能力与潜力、其他
 - assumed（主角以为别人怎么看他）：只记主角明确表露过的猜想（心理描写、对别人说的话），person 和 circle 二选一，circle 取值同上面的读者圈子
 - perceptions（别人对作者的看法）：只记聊天里此人明确说出或写出的判断，不要从态度推断。kind：fact 确知（他确实被告知过）/ self_report 作者本人说的 / inference 自己推测 / rumor 听来的传闻 / misread 明显误解；拿不准就填 inference。topic 同 selfImage
+- creativeProjects / ideaDiscussions（创作构想与灵感讨论）：主角和别人聊“打算写什么”时记这里，不要记成作品、反响、阅读，也不要记成 privateFacts。一次讨论一条，present 只写当时真的在场的人（听到的人才知道）；讨论里顺带提起别的构想时写进 mentions（在场者只知道有这么个构想）；答应帮忙（记纲要、催稿、画插图）用 promise，真做了用 deed，adopted 填 fulfilled 已兑现 / broken 没兑现；points 按人分：kind=idea 构想 / suggestion 建议 / question 提问 / objection 质疑 / praise 赞许 / remark 评论 / joke 调侃 / info 提供资料 / promise 答应帮忙 / deed 做了实事；adopted=pending 未定 / adopted 采纳 / partial 部分采纳 / revised 改过后采纳 / rejected 没采纳 / fulfilled 已兑现 / broken 没兑现——聊天里主角没明确表示采纳与否的一律 pending，不要替他决定。stage=idea 刚有念头 / planning 构思中 / drafting 动笔了 / paused 搁置 / abandoned 放弃 / published 已成作品。这些不影响名声，作品发表后也只是参与者读书时的背景
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：serial=报纸连载，article=单篇文章，book=成书，pamphlet=小册子/附赠本，translation_serial=译作连载，translation_book=译作单行本
@@ -89,6 +93,9 @@
   "selfImage": [{ "mode": "self", "topic": "文风与语言", "text": "主角怎么看自己（self），或在文章、序言、访谈里公开说过的话（claim）", "since": "哪天起", "penname": "针对哪个署名（可空）" }],
   "assumed": [{ "person": "主角以为谁（人物名；针对整个读者圈子时改填 circle）", "circle": "", "topic": "思想倾向", "belief": "主角以为对方觉得……", "since": "哪天起" }],
   "perceptions": [{ "person": "谁", "topic": "身份与背景", "belief": "此人对作者的一种看法（聊天里明确说出或写出的）", "kind": "inference", "date": "哪天表露的", "penname": "针对哪个署名（可空）", "evidence": "依据：原话或位置，40 字内" }],
+  "creativeProjects": [{ "title": "构想的暂名", "penname": "打算用的署名（可空）", "stage": "planning", "since": "第一次提起的日期", "themes": ["题材"], "premise": "设定与情节一句话", "question": "想探讨的核心问题", "forms": "考虑过的形式（如：2100 年医生手记 / 书信体）", "order": "写作顺序（如：等某作品写完再写）", "work": "已经写成并发表时，作品名（否则空）", "notes": "" }],
+  "ideaDiscussions": [{ "project": "构想的暂名（与 creativeProjects 一致）", "date": "YYYY-MM-DD", "time": "21:56–22:12（可空）", "place": "地点", "ref": "楼层或编号，如 AM0509", "present": ["在场的人（不含主角）"], "mentions": ["这次顺带提到的别的构想暂名"],
+      "points": [{ "by": "谁说的（主角写“主角”）", "kind": "suggestion", "text": "说了什么，一句话", "adopted": "pending" }] }],
   "eraNotes": [{ "title": "标题", "text": "与时代背景有关、后续写作要遵守的事实" }]
 }
 
@@ -109,6 +116,7 @@
 - selfImage（主角的自我认知）：mode=self 只是主角心里怎么看自己，谁都不知道；mode=claim 是公开说过的话（文章、序言、访谈），从 since 起读者都可能知道。topic 取：文风与语言、思想倾向、论证方式、知识背景、创作动机、公开回应与论战、身份与背景、名气与影响、能力与潜力、其他
 - assumed（主角以为别人怎么看他）：只记主角明确表露过的猜想（心理描写、对别人说的话），person 和 circle 二选一，circle 取值同上面的读者圈子
 - perceptions（别人对作者的看法）：只记聊天里此人明确说出或写出的判断，不要从态度推断。kind：fact 确知（他确实被告知过）/ self_report 作者本人说的 / inference 自己推测 / rumor 听来的传闻 / misread 明显误解；拿不准就填 inference。topic 同 selfImage
+- creativeProjects / ideaDiscussions（创作构想与灵感讨论）：主角和别人聊“打算写什么”时记这里，不要记成作品、反响、阅读，也不要记成 privateFacts。一次讨论一条，present 只写当时真的在场的人（听到的人才知道）；讨论里顺带提起别的构想时写进 mentions（在场者只知道有这么个构想）；答应帮忙（记纲要、催稿、画插图）用 promise，真做了用 deed，adopted 填 fulfilled 已兑现 / broken 没兑现；points 按人分：kind=idea 构想 / suggestion 建议 / question 提问 / objection 质疑 / praise 赞许 / remark 评论 / joke 调侃 / info 提供资料 / promise 答应帮忙 / deed 做了实事；adopted=pending 未定 / adopted 采纳 / partial 部分采纳 / revised 改过后采纳 / rejected 没采纳 / fulfilled 已兑现 / broken 没兑现——聊天里主角没明确表示采纳与否的一律 pending，不要替他决定。stage=idea 刚有念头 / planning 构思中 / drafting 动笔了 / paused 搁置 / abandoned 放弃 / published 已成作品。这些不影响名声，作品发表后也只是参与者读书时的背景
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：serial=报纸连载，article=单篇文章，book=成书，pamphlet=小册子/附赠本，translation_serial=译作连载，translation_book=译作单行本

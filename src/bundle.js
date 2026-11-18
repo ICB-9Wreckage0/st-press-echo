@@ -7,12 +7,13 @@
 // 整理包里引用别的东西一律用名字，不用 id；名字对不上时会自动新建或给出提示。
 
 import { normalizeISO, cmp } from './date.js';
-import { extractJSON, uid } from './util.js';
+import { extractJSON, uid, isStoryMessage } from './util.js';
 import { callLLM } from './llm.js';
 import { clog } from './console.js';
 import { FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, REL_TYPES, REL_FREQ, setStatus, matchSeenFromChat, rerollOutlet, recordManualReading, recomputeReputation, normSide, normStrength } from './engine.js';
 
 // 以对象为元素的列表按关键字段合并：同一议题/同一文体项目，新的覆盖旧的
+import { POINT_KINDS, ADOPT, PROJECT_STAGES, normProject, normTalk, ME } from './ideas.js';
 const KEYED = { stances: 'issue', stylePrefs: 'aspect', claims: 'issue' };
 const keyNorm = v => String(v ?? '').replace(/[\s　“”"「」《》]/g, '').toLowerCase();
 export function mergeKeyed(a, b, key) {
@@ -50,6 +51,9 @@ export const FORMAT_SPEC = `{
   "selfImage": [{ "mode": "self", "topic": "文风与语言", "text": "主角怎么看自己（self），或在文章、序言、访谈里公开说过的话（claim）", "since": "哪天起", "penname": "针对哪个署名（可空）" }],
   "assumed": [{ "person": "主角以为谁（人物名；针对整个读者圈子时改填 circle）", "circle": "", "topic": "思想倾向", "belief": "主角以为对方觉得……", "since": "哪天起" }],
   "perceptions": [{ "person": "谁", "topic": "身份与背景", "belief": "此人对作者的一种看法（聊天里明确说出或写出的）", "kind": "inference", "date": "哪天表露的", "penname": "针对哪个署名（可空）", "evidence": "依据：原话或位置，40 字内" }],
+  "creativeProjects": [{ "title": "构想的暂名", "penname": "打算用的署名（可空）", "stage": "planning", "since": "第一次提起的日期", "themes": ["题材"], "premise": "设定与情节一句话", "question": "想探讨的核心问题", "forms": "考虑过的形式（如：2100 年医生手记 / 书信体）", "order": "写作顺序（如：等某作品写完再写）", "work": "已经写成并发表时，作品名（否则空）", "notes": "" }],
+  "ideaDiscussions": [{ "project": "构想的暂名（与 creativeProjects 一致）", "date": "YYYY-MM-DD", "time": "21:56–22:12（可空）", "place": "地点", "ref": "楼层或编号，如 AM0509", "present": ["在场的人（不含主角）"], "mentions": ["这次顺带提到的别的构想暂名"],
+      "points": [{ "by": "谁说的（主角写“主角”）", "kind": "suggestion", "text": "说了什么，一句话", "adopted": "pending" }] }],
   "eraNotes": [{ "title": "标题", "text": "与时代背景有关、后续写作要遵守的事实" }]
 }`;
 
@@ -70,6 +74,7 @@ export const FORMAT_RULES = `字段取值：
 - selfImage（主角的自我认知）：mode=self 只是主角心里怎么看自己，谁都不知道；mode=claim 是公开说过的话（文章、序言、访谈），从 since 起读者都可能知道。topic 取：${PERC_TOPICS.join('、')}
 - assumed（主角以为别人怎么看他）：只记主角明确表露过的猜想（心理描写、对别人说的话），person 和 circle 二选一，circle 取值同上面的读者圈子
 - perceptions（别人对作者的看法）：只记聊天里此人明确说出或写出的判断，不要从态度推断。kind：fact 确知（他确实被告知过）/ self_report 作者本人说的 / inference 自己推测 / rumor 听来的传闻 / misread 明显误解；拿不准就填 inference。topic 同 selfImage
+- creativeProjects / ideaDiscussions（创作构想与灵感讨论）：主角和别人聊“打算写什么”时记这里，不要记成作品、反响、阅读，也不要记成 privateFacts。一次讨论一条，present 只写当时真的在场的人（听到的人才知道）；讨论里顺带提起别的构想时写进 mentions（在场者只知道有这么个构想）；答应帮忙（记纲要、催稿、画插图）用 promise，真做了用 deed，adopted 填 fulfilled 已兑现 / broken 没兑现；points 按人分：kind=${Object.entries(POINT_KINDS).map(([k, v]) => k + ' ' + v).join(' / ')}；adopted=${Object.entries(ADOPT).map(([k, v]) => k + ' ' + v).join(' / ')}——聊天里主角没明确表示采纳与否的一律 pending，不要替他决定。stage=${Object.entries(PROJECT_STAGES).map(([k, v]) => k + ' ' + v).join(' / ')}。这些不影响名声，作品发表后也只是参与者读书时的背景
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：${enumLine(FORMS)}
@@ -221,6 +226,12 @@ export function normalizeBundle(obj) {
             person: str(x.person), circle: str(x.person) ? '' : enumKey(CIRCLES, x.circle, ''), topic: PERC_TOPICS.includes(str(x.topic)) ? str(x.topic) : '其他', belief: str(x.belief), since: date(x.since), penname: str(x.penname) })),
         perceptions: arr(b.perceptions).filter(x => str(x?.belief) && str(x.person)).map(x => ({
             person: str(x.person), topic: PERC_TOPICS.includes(str(x.topic)) ? str(x.topic) : '其他', belief: str(x.belief), kind: PERC_KIND[x.kind] ? x.kind : 'inference', date: date(x.date), penname: str(x.penname), evidence: str(x.evidence) })),
+        creativeProjects: arr(b.creativeProjects || b.projects).map(x => (typeof x === 'string' ? { title: x } : x)).filter(x => str(x?.title)).map(x => ({
+            title: bare(x.title), penname: str(x.penname), stage: enumKey(PROJECT_STAGES, x.stage, 'planning'), since: date(x.since), themes: arr(x.themes).map(str).filter(Boolean),
+            premise: str(x.premise), question: str(x.question || x.coreQuestion), forms: Array.isArray(x.forms) ? x.forms.map(str).join(' / ') : str(x.forms), order: str(x.order), work: bare(x.work), notes: str(x.notes) })),
+        ideaDiscussions: arr(b.ideaDiscussions || b.ideaTalks).filter(x => str(x?.project)).map(x => ({
+            project: bare(x.project), date: date(x.date), time: str(x.time), place: str(x.place), ref: str(x.ref), present: arr(x.present).map(str).filter(Boolean), mentions: arr(x.mentions).map(bare).filter(Boolean),
+            points: arr(x.points).filter(p => str(p?.text)).map(p => ({ by: str(p.by) || '主角', kind: POINT_KINDS[p.kind] ? p.kind : 'idea', text: str(p.text), adopted: ADOPT[p.adopted] ? p.adopted : 'pending' })), notes: str(x.notes) })),
         warnings: warn,
     };
     for (const r of arr(b.reactions || b.confirmedReactions)) {
@@ -244,6 +255,7 @@ export function normalizeBundle(obj) {
 // ———————————— 合并多份整理包（分块抽取或分几次输出） ————————————
 
 const keyOf = { selfImage: x => x.mode + x.text, assumed: x => (x.person || x.circle) + x.belief, perceptions: x => x.person + x.belief, privateFacts: x => x.text, pennames: x => x.name, outlets: x => x.name, persons: x => x.name, works: x => x.title, rumors: x => x.text, eraNotes: x => x.title + x.text,
+    creativeProjects: x => x.title, ideaDiscussions: x => `${x.project}|${x.date}|${x.ref || x.time}`,
     reactions: x => `${x.date}|${x.layer}|${x.person}|${x.work}|${x.outlet}|${x.title}|${x.polarity}`, readings: x => `${x.person}|${x.work}` };
 const sameName = (a, b) => { const n = s => String(s || '').replace(/[\s·・.《》]/g, '').toLowerCase(); return n(a) && n(a) === n(b); };
 
@@ -264,6 +276,7 @@ export function mergeBundles(a, b) {
                 if (f === 'knownBy') { const m = new Map((ex.knownBy || []).map(k => [k.person, k])); for (const k of v) m.set(k.person, { ...(m.get(k.person) || {}), ...k }); ex.knownBy = [...m.values()]; continue; }
                 if (f === 'relations') { const m = new Map((ex.relations || []).map(r => [r.to, r])); for (const r of v) m.set(r.to, { ...(m.get(r.to) || {}), ...r }); ex.relations = [...m.values()]; continue; }
                 if (KEYED[f]) { ex[f] = mergeKeyed(ex[f], v, KEYED[f]); continue; }
+                if (f === 'points') { ex.points = mergeKeyed(ex.points, v, 'text'); continue; }
                 if (f === 'rolesGiven') { ex[f] = !!(ex[f] || v); continue; }
                 if (Array.isArray(v)) ex[f] = [...new Set([...(ex[f] || []), ...v])];
                 else if (v !== '' && v != null) ex[f] = v; // 后出现的（更新的）覆盖
@@ -276,6 +289,12 @@ export function mergeBundles(a, b) {
 
 // ———————————— 预览与应用 ————————————
 
+const isMe = n => /^(主角|我|protagonist|me)$/i.test(String(n || '').trim()) || n === ME;
+function findTalk(state, x) {
+    const pr = (state.projects || []).find(y => sameName(y.title, x.project));
+    if (!pr) return null;
+    return (state.ideaTalks || []).find(t => t.projectId === pr.id && t.date === x.date && (x.ref ? t.ref === x.ref : (!x.time || t.time === x.time))) || null;
+}
 function findPerson(state, name) {
     return findByName(state.persons, name) || state.persons.find(p => (p.aliases || []).some(a => sameName(a, name))) || null;
 }
@@ -323,6 +342,9 @@ export function previewBundle(state, b) {
     pv.items.selfImage = (b.selfImage || []).map(x => ({ name: `${x.mode === 'claim' ? '对外说法' : '主角自认'}：${x.text}`, exists: (state.selfImage || []).some(y => y.mode === x.mode && nz(y.text) === nz(x.text)) }));
     pv.items.assumed = (b.assumed || []).map(x => ({ name: `以为${x.person || CIRCLES[x.circle] || ''}觉得：${x.belief}`, exists: (state.assumed || []).some(y => nz(y.belief) === nz(x.belief)) }));
     pv.items.perceptions = (b.perceptions || []).map(x => ({ name: `${x.person}：${x.belief}（${PERC_KIND[x.kind]}）`, exists: (state.perceptions || []).some(y => nz(y.belief) === nz(x.belief) && findPerson(state, x.person)?.id === y.observerId) }));
+    pv.items.creativeProjects = (b.creativeProjects || []).map(x => ({ name: `${x.title}${x.since ? '（' + x.since + ' 起）' : ''}${x.work ? ' → 《' + x.work + '》' : ''}`, exists: (state.projects || []).some(y => sameName(y.title, x.title)) }));
+    pv.items.ideaDiscussions = (b.ideaDiscussions || []).map(x => ({ name: `${x.date} ${x.place || ''} 聊“${x.project}”${x.present.length ? '（在场：' + x.present.join('、') + '）' : ''}`, exists: !!findTalk(state, x) }));
+    for (const k of ['creativeProjects', 'ideaDiscussions']) pv.counts[k] = { new: pv.items[k].filter(x => !x.exists).length, update: pv.items[k].filter(x => x.exists).length };
     for (const k of ['selfImage', 'assumed', 'perceptions']) pv.counts[k] = { new: pv.items[k].filter(x => !x.exists).length, update: 0 };
     // 引用了整理包和现有数据里都没有的名字
     const has = (k, n) => !n || b[k].some(x => sameName(x.name || x.title, n) || (x.aliases || []).some(a => sameName(a, n)))
@@ -338,6 +360,7 @@ export function previewBundle(state, b) {
         if (!has('persons', r.person)) miss.add(`阅读记录里的“${r.person}”不在人物列表，将自动新建`);
         if (!has('works', r.work)) miss.add(`阅读记录里的作品《${r.work}》不存在，这条会被跳过`);
     }
+    for (const d of b.ideaDiscussions || []) for (const n of [...d.present, ...d.points.map(p => p.by)]) if (n && !isMe(n) && !has('persons', n)) miss.add(`灵感讨论里的“${n}”不在人物列表，将自动新建`);
     pv.warnings.push(...miss);
     pv.stale = staleImported(state, b).map(e => `${e.date} ${LAYERS[e.layer]?.label || e.layer} ${state.persons.find(p => p.id === e.personId)?.name || e.personName || ''}${e.workId ? ' 《' + (state.works.find(w => w.id === e.workId)?.title || '') + '》' : ''}${e.count ? ` 约${e.count}` : ''}`);
     if (b.storyDate && state.currentDate && cmp(b.storyDate, state.currentDate) < 0) pv.warnings.push(`整理包的日期 ${b.storyDate} 早于当前故事日期 ${state.currentDate}，不会把日期往回调`);
@@ -513,6 +536,45 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
         p.origin = 'bundle'; p.evidence = x.evidence.slice(0, 120);
         report.created.push(`${q.name} 的看法“${x.belief.slice(0, 20)}”${p.kind !== x.kind ? `（标为${PERC_KIND[x.kind]}，但对不上他知道的事，改为${PERC_KIND[p.kind]}）` : ''}`);
     }
+    if (on('creativeProjects')) for (const x of b.creativeProjects || []) {
+        state.projects = state.projects || [];
+        let ex = state.projects.find(y => sameName(y.title, x.title));
+        const isNew = !ex;
+        if (!ex) { ex = normProject({ title: x.title }); state.projects.push(ex); }
+        for (const f of ['stage', 'since', 'premise', 'question', 'forms', 'order', 'notes']) if (x[f]) ex[f] = x[f];
+        if (x.since && ex.since && cmp(x.since, ex.since) > 0) { /* 保留更早的首次提起日期 */ }
+        ex.themes = [...new Set([...(ex.themes || []), ...x.themes])];
+        if (x.penname) { const pid = penOf(x.penname); if (pid) ex.pennameId = pid; else ex.penNote = x.penname; }
+        if (x.work) { const w = findWork(state, x.work); if (w) { ex.workId = w.id; ex.stage = 'published'; } else report.skipped.push(`构想“${x.title}”关联的作品《${x.work}》不存在`); }
+        report[isNew ? 'created' : 'updated']?.push?.(`创作构想“${x.title}”`);
+    }
+    if (on('ideaDiscussions')) for (const x of b.ideaDiscussions || []) {
+        state.projects = state.projects || []; state.ideaTalks = state.ideaTalks || [];
+        let pr = state.projects.find(y => sameName(y.title, x.project));
+        if (!pr) { pr = normProject({ title: x.project, since: x.date, stage: 'planning' }); state.projects.push(pr); report.created.push(`创作构想“${x.project}”`); }
+        const pid = n => (isMe(n) ? ME : ensurePerson(state, n, report)?.id || null);
+        const present = x.present.filter(n => !isMe(n)).map(pid).filter(Boolean);
+        const points = x.points.map(p => ({ ...p, by: pid(p.by) })).filter(p => p.by);
+        const mentions = x.mentions.map(n => { let q = state.projects.find(y => sameName(y.title, n)); if (!q) { q = normProject({ title: n, since: x.date }); state.projects.push(q); report.created.push(`创作构想“${n}”（只被提起，资料空白）`); } return q.id; }).filter(id => id !== pr.id);
+        let t = findTalk(state, x);
+        if (!t) {
+            t = normTalk({ projectId: pr.id, date: x.date, time: x.time, place: x.place, ref: x.ref, present, points, mentions, notes: x.notes });
+            state.ideaTalks.push(t);
+            report.created.push(`${x.date} 关于“${pr.title}”的讨论（${present.length} 人在场，${points.length} 条观点）`);
+        } else {
+            t.present = [...new Set([...(sync ? [] : t.present), ...present])];
+            t.mentions = [...new Set([...(t.mentions || []), ...mentions])];
+            const nt = v => String(v || '').replace(/[\s，。、；：“”（）,.;:]/g, '');
+            for (const p of points) {
+                const old = t.points.find(o => nt(o.text) === nt(p.text));
+                if (!old) t.points.push(p);
+                else if (old.adopted === 'pending' && p.adopted !== 'pending') old.adopted = p.adopted; // 你手改过的采纳状态不被整理包覆盖回“未定”
+            }
+            for (const f of ['time', 'place', 'notes']) if (x[f]) t[f] = x[f];
+            report.updated?.push?.(`${x.date} 关于“${pr.title}”的讨论`);
+        }
+        if (!pr.since || (x.date && cmp(x.date, pr.since) < 0)) pr.since = x.date || pr.since;
+    }
     if (on('reactions')) for (const r of b.reactions) {
         const person = r.person ? (findPerson(state, r.person) || (['reader_letters', 'mentions'].includes(r.layer) ? null : ensurePerson(state, r.person, report))) : null;
         const work = r.work ? findWork(state, r.work) : null;
@@ -634,9 +696,9 @@ ${known ? `\n已知名字（指同一对象时沿用完全相同的写法）：\
 }
 
 /** SillyTavern 聊天导出（.jsonl）或当前聊天 → 纯文本 */
-export function chatToText(messages) {
+export function chatToText(messages, includeHidden = true) {
     return (messages || [])
-        .filter(m => m && typeof m.mes === 'string' && !m.is_system)
+        .filter(m => isStoryMessage(m, includeHidden))
         .map(m => `${m.name || (m.is_user ? '用户' : '角色')}：${m.mes}`)
         .join('\n\n');
 }
@@ -669,7 +731,9 @@ export function renameRefs(b, kind, oldName, newName) {
         for (const r of b.readings || []) r.person = sw(r.person);
         for (const p of b.persons || []) for (const r of p.relations || []) r.to = sw(r.to);
         for (const p of b.pennames || []) p.knownBy = swArr(p.knownBy);
+        for (const d of b.ideaDiscussions || []) { d.present = swArr(d.present); for (const pt of d.points || []) pt.by = sw(pt.by); }
     } else if (kind === 'works') {
+        for (const c of b.creativeProjects || []) c.work = sw(c.work);
         for (const r of b.reactions || []) r.work = sw(r.work);
         for (const r of b.readings || []) r.work = sw(r.work);
         for (const w of b.works || []) w.versionOf = sw(w.versionOf);
@@ -679,6 +743,9 @@ export function renameRefs(b, kind, oldName, newName) {
         for (const p of b.persons || []) { p.outlets = swArr(p.outlets); p.reads = swArr(p.reads); }
     } else if (kind === 'pennames') {
         for (const w of b.works || []) w.penname = sw(w.penname);
+        for (const c of b.creativeProjects || []) c.penname = sw(c.penname);
+    } else if (kind === 'creativeProjects') {
+        for (const d of b.ideaDiscussions || []) { d.project = sw(d.project); d.mentions = swArr(d.mentions); }
     }
     return n;
 }
@@ -691,7 +758,7 @@ export function replaceBundleItem(b, kind, index, raw) {
     const item = norm[kind]?.[0];
     if (!item) throw new Error(norm.warnings[0] || '这条不完整（例如缺日期或名字），没有保存');
     if (kind === 'persons') item.rolesGiven = old.rolesGiven || JSON.stringify(item.roles) !== JSON.stringify(old.roles);
-    const nameKey = kind === 'works' ? 'title' : 'name';
+    const nameKey = kind === 'works' || kind === 'creativeProjects' ? 'title' : 'name';
     const refs = old[nameKey] && item[nameKey] ? renameRefs(b, kind, old[nameKey], item[nameKey]) : 0;
     b[kind][index] = item;
     const merged = mergeBundles(normalizeBundle({ storyDate: b.storyDate, place: b.place }), { ...b, warnings: [] });

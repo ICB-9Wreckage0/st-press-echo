@@ -6,6 +6,7 @@ import { callLLM } from './llm.js';
 import { srcOf, loadSources } from './sources.js';
 import { factLines, perceptionsOf, storePerceptions, claimsVisible, PERC_TOPICS, PERC_KIND } from './perception.js';
 import { extractJSON, truncate } from './util.js';
+import { ideaLines } from './ideas.js';
 import { byId, workTags, READ_STATES, STRENGTH, FORMS, SIDES, STANCE_STRENGTH, TOLERANCE, normSide, normStrength, stanceMatch, stanceText, READ_DONE } from './engine.js';
 import { eraBrief } from './era.js';
 
@@ -221,7 +222,7 @@ async function generateOpinionNow(state, rec, era, settings) {
     const pen = byId(state.pennames, work.pennameId);
     const knows = !!(pen && (pen.publicIdentityKnown || (pen.knownBy?.length ? pen.knownBy.includes(person.id) : person.knowsIdentity)));
     const owner = pen?.owner || '主角';
-    const facts = factLines(state, person, rec.readDate, { knowsPen: knows, workId: work.id, ownerName: owner });
+    const facts = [...factLines(state, person, rec.readDate, { knowsPen: knows, workId: work.id, ownerName: owner }), ...ideaLines(state, person, rec.readDate, { workId: work.id, knowsPen: knows })];
     const priorBeliefs = perceptionsOf(state, person.id, { before: rec.readDate }).slice(-10);
     const claims = claimsVisible(state, pen?.id, rec.readDate).slice(-6);
     const system = `你在模拟一位历史人物私下读完一部作品后的真实看法。时间：${rec.readDate}。

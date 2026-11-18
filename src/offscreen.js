@@ -7,6 +7,7 @@ import { extractJSON, truncate, uid } from './util.js';
 import { byId, LAYERS, READ_STATES, STRENGTH, EXPRESSION, CHANNELS } from './engine.js';
 import { cmp } from './date.js';
 import { factsKnownBy } from './perception.js';
+import { talkPeople } from './ideas.js';
 import { eraBrief } from './era.js';
 import { clog } from './console.js';
 
@@ -55,6 +56,8 @@ export async function buildOffscreen(st, { from, to, freshRecIds, era, settings,
     if (f.empty) return null;
     const facts = (st.privateFacts || []).filter(f => f.text);
     const factRule = facts.length ? `\n4b. 主角的私人信息只有下列知情者知道，其他人不得提到、不得猜中；知情者私下也不得把它告诉别人（是否外传由推演决定）：\n${facts.map(f => `  - ${f.text} —— 知情者：${f.public ? '公开' : (f.knownBy || []).filter(k => !k.since || cmp(k.since, to) <= 0).map(k => byId(st.persons, k.personId)?.name).filter(Boolean).join('、') || '无'}`).join('\n')}` : '';
+    const talks = (st.ideaTalks || []).filter(t => !t.date || cmp(t.date, to) <= 0);
+    const ideaRule = talks.length ? `\n4c. 主角私下聊过的写作构想（还不是作品，没发表）只有当时在场的人知道；不在场的人不得知道，在场的人也不会把没写出来的构想当成作品去评论：\n${[...new Set(talks.flatMap(t => [t.projectId, ...(t.mentions || [])]))].map(pid => { const pr = byId(st.projects, pid); const ppl = [...new Set(talks.filter(t => t.projectId === pid).flatMap(talkPeople))]; const heard = [...new Set(talks.filter(t => (t.mentions || []).includes(pid)).flatMap(talkPeople))].filter(id => !ppl.includes(id)); return pr ? `  - “${pr.title || '未命名构想'}”${pr.stage === 'published' ? '（已成书）' : ''} —— 听过的人：${ppl.map(id => name(st, id)).join('、') || '无'}${heard.length ? `；只听人提起过、不知道内容：${heard.map(id => name(st, id)).join('、')}` : ''}` : ''; }).filter(Boolean).join('\n')}` : '';
     const pens = (st.pennames || []).map(p => `${p.name}${p.publicIdentityKnown ? '（身份已公开）' : '（公众不知道作者是谁）'}${(p.knownBy || []).length ? '；知情者：' + p.knownBy.map(id => name(st, id)).join('、') : ''}`).join('；');
     const system = `你在为一部以 ${to} 为当前日期的历史角色扮演故事，补写“幕后”：文学界在主角看不到的地方发生的事。
 时代约束：
@@ -63,7 +66,7 @@ ${eraBrief(era, 700)}
 1. 只能依据下面“推演结果”展开：谁读了什么、态度如何、跟谁谈起，都已定好，不得改变、不得新增读者，也不得让没读过的人评论作品内容。
 2. 不得编造新的公开书评、报道或寄给主角的信（公开文章只来自账本）；你写的是这些事背后的场景：沙龙里的议论、编辑部的盘算、书店的情形、熟人之间的转述、他人之间的书信。
 3. 真实历史人物只写符合其已知立场的言行，不编造可考证的原话；可以写“据说他在某处说过大意是……”。
-4. 笔名身份：${pens || '无'}。不知情的人只能猜测，不能说破。${factRule}
+4. 笔名身份：${pens || '无'}。不知情的人只能猜测，不能说破。${factRule}${ideaRule}
 5. 每条标明主角能否知道。主角不在场、没人告诉他的，一律 no。
 6. 下面“聊天近况”是主角那边已经写到的情节：不要与之矛盾，也不要重复它已经写过的事。
 7. 4–10 条，宁少勿滥；平淡的也可以（例如某人读完只是放在一边）。用${settings.outputLanguage || '中文'}。只输出 JSON：
