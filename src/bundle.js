@@ -210,7 +210,7 @@ export function normalizeBundle(obj) {
         works: arr(b.works).map(w => (typeof w === 'string' ? { title: w } : w)).filter(w => str(w.title || w.name)).map(w => ({
             title: bare(w.title || w.name), aliases: arr(w.aliases).map(bare).filter(a => a && a !== bare(w.title || w.name)), penname: str(w.penname),
             form: enumKey(FORMS, w.form, ''), outlet: bare(w.outlet || w.outletName),
-            pubDate: date(w.pubDate), endDate: date(w.endDate), datePrecision: precKey(w.datePrecision), dateFrom: date(w.dateFrom), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: bare(w.versionOf),
+            pubDate: date(w.pubDate), endDate: date(w.endDate), datePrecision: precKey(w.datePrecision), precGiven: !!str(w.datePrecision), dateFrom: date(w.dateFrom), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: bare(w.versionOf),
             shelf: w.shelf === true || w.shelf === 'yes' ? 'yes' : w.shelf === false || w.shelf === 'no' ? 'no' : '', shelfUntil: date(w.shelfUntil),
             claims: arr(w.claims).filter(x => x && str(x.issue)).map(x => ({ issue: str(x.issue), side: normSide(x.side), note: str(x.note), where: str(x.where) })),
         })),
@@ -483,6 +483,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
             };
             if (!ex) { ex = { ...blankWork(), title: w.title, pennameId: state.pennames[0]?.id || '' }; state.works.push(ex); }
             fill(ex, data, sync);
+            if (w.precGiven) ex.datePrecision = w.datePrecision; // 写明 day 也要生效（空值不会被 fill 覆盖）
             if (w.claims?.length || sync) ex.claims = sync ? [...(w.claims || [])] : mergeKeyed(ex.claims, w.claims, KEYED.claims);
         }
         for (const w of b.works) if (w.versionOf) {

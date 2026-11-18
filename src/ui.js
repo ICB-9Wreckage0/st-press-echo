@@ -2988,7 +2988,7 @@ function offscreenBlock(st) {
 // ———————————— 整理包条目的编辑 ————————————
 const BF_LABEL = { topic: '类别', knownBy: '知情者（JSON）', public: '已公开', publicSince: '公开日期', name: '名字', title: '作品名', aliases: '别名', owner: '真实作者', publicIdentityKnown: '身份已公开', knownBy: '知道作者身份的人', originalName: '原文名', periodicity: '出刊周期', weekday: '出刊星期（0=周日）', monthDays: '出刊日', circle: '读者圈子', tier: '影响力 1–5', politics: '倾向', real: '真实存在', note: '备注', roles: '身份', outlets: '供稿刊物', reads: '常读刊物', interests: '关注', likes: '欣赏', dislikes: '反感', closeness: '与主角私交', knowsIdentity: '知道主角是作者', monthlyCapacity: '每月公开文章上限', columnWeekday: '专栏星期（0=周日）', notes: '备注', relations: '熟人关系（JSON）', stances: '思想立场（JSON）', stylePrefs: '文体偏好（JSON）', penname: '署名', form: '形式', outlet: '刊物', pubDate: '发表日期', endDate: '连载结束日', datePrecision: '日期精度', themes: '题材', summary: '概要', versionOf: '另一版本的作品名', shelf: '长期流通（yes/no/空）', shelfUntil: '流通到', claims: '主张（JSON）', date: '日期', layer: '类型', person: '人物', work: '作品', polarity: '褒贬', count: '数量', evidence: '依据', read: '读到什么程度', text: '内容', strength: '热度 0–1', mode: '类型', belief: '看法', since: '起始日期', kind: '来源' };
 Object.assign(BF_LABEL, { order: '写作顺序', mentions: '顺带提到的构想', stage: '进度', since: '第一次提起', premise: '设定与情节', question: '核心问题', forms: '考虑过的形式', project: '属于哪个构想', time: '时间', place: '地点', ref: '出处', present: '在场的人', points: '各人观点（JSON：by / kind / text / adopted）' });
-const BF_SKIP = new Set(['rolesGiven']);
+const BF_SKIP = new Set(['rolesGiven', 'precGiven']);
 const BF_LONG = new Set(['summary', 'notes', 'note', 'text', 'evidence']);
 const BF_ENUM = {
     periodicity: () => ({ '': '（未知）', ...PERIODICITY }), circle: () => ({ '': '（未知）', ...CIRCLES }), form: () => ({ '': '（未知）', ...FORMS }),
