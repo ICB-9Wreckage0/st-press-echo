@@ -710,3 +710,11 @@ span.pe-pol:not(.pe-chip) { font-size: .9em; padding: 0 4px; border: 1px solid; 
 .pe-bitem-editor textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .9em; }
 .pe-linkbtn { background: none; border: none; padding: 0; color: var(--pe-accent); text-decoration: underline; cursor: pointer; font: inherit; }
 #pe-bundle-json { width: 100%; box-sizing: border-box; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .88em; }
+
+/* ---------- 推荐的新人物 ---------- */
+.pe-sg { border-left: 3px solid var(--pe-border); }
+.pe-sg-high { border-left-color: var(--pe-good); }
+.pe-sg-medium { border-left-color: var(--pe-mid); }
+.pe-sg-low { border-left-color: var(--pe-bad); }
+.pe-sg .pe-card-main > div { margin-top: 3px; line-height: 1.5; }
+.pe-sg-low .pe-sg-conf { color: var(--pe-bad); }

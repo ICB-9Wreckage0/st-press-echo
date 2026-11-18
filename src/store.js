@@ -12,8 +12,11 @@ export const DEFAULT_SETTINGS = {
     // 推演
     ...DEFAULT_ENGINE_SETTINGS,
     autoDetectDate: true,
+    epiEnabled: true, // 书信簿（st-epistolary）联动总开关
     epiSyncDate: true, // 书信簿（st-epistolary）推算出更晚的剧情日期时，一并采用
-    autoAdvance: true,
+    autoAdvance: true, // 旧版开关，保留兼容
+    autoAdvanceMode: 'interval', // interval 故事时间每过 N 天推演一次 / every 每次识别到新日期 / off 只手动
+    autoAdvanceDays: 14,
     maxJumpDays: 120,
     headChars: 160,
     // 注入
@@ -27,6 +30,8 @@ export const DEFAULT_SETTINGS = {
     aiFill: 'opinions', // off / brief 幕后补完 / opinions 再给新读者生成看法 / all 再给新入账反响写稿
     aiFillMax: 10,
     aiFillOnAuto: false,
+    autoFloorEvery: 0, // 每聊满 N 楼自动跑一次“一键推演到今天”（0 = 不按楼数）
+    aiSuggestPersons: true, // AI 补完时推荐可能读到作品的新人物（进待确认）
     consoleAuto: true,
     // 写稿
     apiMode: 'st', // 'st' 用酒馆当前连接；'custom' 用独立 OpenAI 兼容接口
@@ -143,4 +148,10 @@ export function logLine(state, text) {
     state.log = state.log || [];
     state.log.unshift({ at: new Date().toISOString(), date: state.currentDate, text });
     if (state.log.length > 200) state.log.length = 200;
+}
+
+/** 自动推演方式（兼容旧版的开关） */
+export function advanceMode(s) {
+    if (s.autoAdvanceMode) return s.autoAdvanceMode;
+    return s.autoAdvance === false ? 'off' : 'interval';
 }

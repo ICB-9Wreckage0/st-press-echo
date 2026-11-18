@@ -12,7 +12,8 @@ export const INJECT_KEY = 'press_echo';
 export function buildInjection(state, era, settings) {
     if (!state) return '';
     const L = [];
-    L.push(`[报刊回声｜故事日期 ${state.currentDate || '未设定'}${state.currentDate ? '（' + weekdayZh(state.currentDate) + '）' : ''}${state.era?.place ? '｜' + state.era.place : ''}]`);
+    const today = state.detectedDate && state.currentDate && state.detectedDate > state.currentDate ? state.detectedDate : state.currentDate;
+    L.push(`[报刊回声｜故事日期 ${today || '未设定'}${today ? '（' + weekdayZh(today) + '）' : ''}${state.era?.place ? '｜' + state.era.place : ''}]`);
 
     if (settings.injectEraNotes && era) {
         const bits = [];
