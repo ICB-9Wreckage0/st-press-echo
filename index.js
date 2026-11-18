@@ -48,6 +48,8 @@ const DEFAULT_SETTINGS = {
     detectArrival: true,     // 剧情里（包括 AI 的思考）写到收信人收到信、转交人动了信，就自动处理
     animations: true,        // 寄信封缄、收信拆信动画
     fab: true,               // 屏幕上的悬浮按钮
+    postbox: true,           // 右下角的书信簿提醒
+    postboxMin: false,       // 提醒收成一个小圆片
     myNoteStyles: [],        // 存下来的纸条样子 [{ id, desc, word, base }]
     autoBlurb: false,        // 保存时让 AI 自动写一句话简介（默认关；手动点“AI 写一句”照常能用）
     pageBreaks: true,        // 阅读页画分页线（第 1 张 · 背面……）
@@ -2577,7 +2579,7 @@ function downloadText(name, text) {
 
 // 一键备份：what = 'all'（信件 + 设置）| 'archive'（只要信件）| 'settings'（只要设置）
 function exportBackup(what = 'all', { includeKey = false } = {}) {
-    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.57.3' });
+    const pack = buildBackup({ archive: store.archive, settings: settings(), what, includeKey, version: '0.58.0' });
     downloadText(backupFileName(what), JSON.stringify(pack, null, 2));
     return pack;
 }
