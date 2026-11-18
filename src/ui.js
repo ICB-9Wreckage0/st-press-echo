@@ -3,7 +3,7 @@
 import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON } from './util.js';
 import { weekdayZh, normalizeISO, yearOf, cmp, addDays, diffDays, pickStoryDate } from './date.js';
 import {
-    FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, knownToUser, knownSince, repLabel, setStatus, rerollWork, advanceTo, byId, columnSlots,
+    FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, knownToUser, knownSince, repLabel, fameLabel, esteemLabel, FAME_LEVELS, recomputeReputation, repBreakdown, repOrphans, fixRepOrphans, setStatus, rerollWork, advanceTo, byId, columnSlots,
     rerollPerson, rerollOutlet, approxIssue, READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, REL_BASIS, isMutual, relationsBetween, edgeFlows, findPaths, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, backfillBegin, backfillStep, backfillEnd, simulate, impressionAt, IMPRESSION_LABEL, seriesKey, READ_DONE } from './engine.js';
 import { buildEvidenceCard, cardText, generateOpinion, OPINION_DIMS, STYLE_CHECKLIST, RESPECT, FOLLOW, draftPersonProfile, draftWorkClaims } from './analysis.js';
 import {
@@ -536,10 +536,14 @@ function overview(st, s) {
     const bigDate = d ? `${+d.slice(0, 4)} 年 ${+d.slice(5, 7)} 月 ${+d.slice(8, 10)} 日` : '尚未设定故事日期';
     const epiD = s.epiEnabled !== false && s.epiSyncDate && epistolaryAvailable() ? epistolaryStoryDate() : null;
     const recent = st.ledger.filter(e => e.status === 'approved').slice(-4).reverse();
+    if (Object.values(st.reputation || {}).some(r => Object.values(r || {}).some(v => typeof v === 'number'))) recomputeReputation(st); // 旧版存的是单一数值
     const pens = st.pennames.map(p => {
-        const rep = st.reputation[p.id] || {};
-        return `<tr><td><b>${h(p.name)}</b>${p.publicIdentityKnown ? ' <span class="pe-chip">身份已公开</span>' : ''}</td>${Object.keys(CIRCLES).map(c => `<td title="${(rep[c] || 0).toFixed(2)}" class="pe-rep pe-rep${Math.sign(Math.round((rep[c] || 0) * 2))}">${repLabel(rep[c] || 0)}</td>`).join('')}</tr>`;
+        const rep = st.reputation?.[p.id] || {};
+        return `<tr><td><b>${h(p.name)}</b>${p.publicIdentityKnown ? ' <span class="pe-chip">身份已公开</span>' : ''}</td>${Object.keys(CIRCLES).map(c => { const r = rep[c]; const f = r?.fame || 0; const lv = FAME_LEVELS.findIndex(([t]) => f < t);
+            const inner = `<div>${h(fameLabel(f))}</div>${f >= 0.1 ? `<small class="pe-est pe-est${r.w >= 0.1 ? Math.sign(Math.round((r.mean || 0) * 2)) : 'x'}">${h(esteemLabel(r))}</small>` : ''}`;
+            return `<td class="pe-rep pe-fame${lv}" title="${r ? h(`知名度 ${f.toFixed(2)}（${fameLabel(f)}）\n评价：${esteemLabel(r)}${r.w ? `（好评分量 ${r.pos.toFixed(2)}、批评分量 ${r.neg.toFixed(2)}，加权平均 ${(r.mean || 0).toFixed(2)}，共 ${r.n} 篇表态）` : ''}\n点开看由哪些反响构成`) : '没有已入账的公开反响'}">${r ? `<button class="pe-repbtn" data-act="rep-cell" data-pen="${p.id}" data-circle="${c}">${inner}</button>` : inner}</td>`; }).join('')}</tr>`;
     }).join('');
+    const orphans = repOrphans(st);
     const rumors = (st.rumors || []).map(r => `<div class="pe-card pe-card-slim"><div class="pe-card-main">${h(r.text)}
         <div class="pe-meter" title="热度 ${Math.round(r.strength * 100)}%"><i style="width:${Math.round(r.strength * 100)}%"></i></div></div>
         <div class="pe-card-actions"><button class="pe-mini" data-act="rumor-pin" data-id="${r.id}">${r.pinned ? '取消固定' : '固定'}</button>
@@ -573,8 +577,9 @@ function overview(st, s) {
     <h4>最近入账</h4>
     ${recent.length ? recent.map(e => evCard(st, e, '', { compact: true })).join('') + '<div class="pe-more"><a class="pe-link" data-tab-go="ledger">查看全部账本 →</a></div>' : '<div class="pe-empty-sm">还没有入账的反响。</div>'}
 
-    <h4>笔名声誉 <small class="pe-muted">只由已入账的公开反响改变</small></h4>
-    ${st.pennames.length ? `<div class="pe-table-wrap"><table class="pe-table"><tr><th></th>${Object.values(CIRCLES).map(c => `<th>${c}</th>`).join('')}</tr>${pens}</table></div>` : '<div class="pe-empty-sm">还没有笔名。<a class="pe-link" data-tab-go="works">去添加</a></div>'}
+    <h4>笔名名声 <small class="pe-muted">只由已入账的公开反响改变。上面一行是知名度（有多少人知道这个署名，批评也会让人知道），下面一行是评价（表态的人整体偏好还是偏坏）。点格子看由哪些反响构成</small></h4>
+    ${orphans.length ? `<div class="pe-callout pe-callout-warn">⚠ 有 <b>${orphans.length}</b> 条已入账的反响没算进任何笔名的名声（${h([...new Set(orphans.map(x => x.why))].join('、'))}）。${orphans.some(x => x.want) ? '<button class="pe-primary" data-act="rep-fix">按作品的署名重新关联</button>' : ''}<button class="pe-mini" data-act="rep-orphans">看是哪些</button></div>` : ''}
+    ${st.pennames.length ? `<div class="pe-table-wrap"><table class="pe-table pe-rep-table"><tr><th></th>${Object.entries(CIRCLES).map(([k, c]) => `<th title="${h(c)}">${h({ radical: '激进报刊', professional: '专业界', political: '政论界' }[k] || c)}</th>`).join('')}</tr>${pens}</table></div>` : '<div class="pe-empty-sm">还没有笔名。<a class="pe-link" data-tab-go="works">去添加</a></div>'}
 
     ${offscreenBlock(st)}
 
@@ -1981,6 +1986,16 @@ async function onClick(e) {
         case 'nw-unsel': if (simView?.kind === 'network') { simView.sel = null; refresh(); } break;
         case 'nw-pick': if (simView?.kind === 'network') { simView.sel = { kind: 'node', id: btn.dataset.id }; refresh(); } break;
         case 'nw-path-from': if (simView?.kind === 'network') { simView.pa = btn.dataset.id; refresh(); } break;
+        case 'rep-cell': {
+            const list = repBreakdown(st, btn.dataset.pen, btn.dataset.circle);
+            const r = st.reputation?.[btn.dataset.pen]?.[btn.dataset.circle] || {};
+            const POL = { 1: '好评', '-1': '批评', 0: '褒贬参半' };
+            showText(`${byId(st.pennames, btn.dataset.pen)?.name} · ${CIRCLES[btn.dataset.circle]}：${fameLabel(r.fame)}，${esteemLabel(r)}`, [`知名度 ${(r.fame || 0).toFixed(2)}；评价加权平均 ${(r.mean || 0).toFixed(2)}（好评分量 ${(r.pos || 0).toFixed(2)}、批评分量 ${(r.neg || 0).toFixed(2)}）`, '',
+                ...list.map(e => `${e.date} ${byId(st.outlets, e.outletId)?.name ? '《' + byId(st.outlets, e.outletId).name + '》' : ''}${byId(st.persons, e.personId)?.name || e.personName || ''} ${LAYERS[e.layer]?.label || e.layer}${e.count ? ' 约' + e.count : ''} 《${byId(st.works, e.workId)?.title || ''}》：知名度 +${e.repApplied.fame}${e.repApplied.pol != null ? '，' + POL[e.repApplied.pol] : ''}`)].join('\n'));
+            break;
+        }
+        case 'rep-orphans': showText('没算进名声的反响', repOrphans(st).map(x => `${x.ev.date} ${LAYERS[x.ev.layer]?.label} 《${byId(st.works, x.ev.workId)?.title || '?'}》：${x.why}${x.want ? `（作品署名：${byId(st.pennames, x.want)?.name}）` : '（作品也没有署名，请先在作品里选署名）'}`).join('\n')); break;
+        case 'rep-fix': { pushUndo(st, '重新关联笔名'); const n = fixRepOrphans(st); commit(`已按作品的署名重新关联 ${n} 条反响`); break; }
         case 'nw-relayout': if (simView?.kind === 'network') { simView.pos = {}; refresh(); } break;
         case 'concepts-build':
         case 'concepts-rebuild': {
@@ -3426,7 +3441,7 @@ function percPage(st) {
         const img = latestImage(st, v.penId, c, asOf);
         const n = publicPieces(st, v.penId, c, asOf);
         const rep = st.reputation?.[v.penId]?.[c];
-        return `<div class="pe-card pe-card-slim"><div class="pe-card-main"><div><b>${h(CIRCLES[c])}</b> <small class="pe-muted">公开材料 ${n.evs.length} 篇${n.claims.length ? ' · 作者说法 ' + n.claims.length : ''}${n.rumors.length ? ' · 传闻 ' + n.rumors.length : ''}${rep != null ? ' · ' + h(repLabel(rep)) : ''}</small></div>
+        return `<div class="pe-card pe-card-slim"><div class="pe-card-main"><div><b>${h(CIRCLES[c])}</b> <small class="pe-muted">公开材料 ${n.evs.length} 篇${n.claims.length ? ' · 作者说法 ' + n.claims.length : ''}${n.rumors.length ? ' · 传闻 ' + n.rumors.length : ''}${rep ? ' · ' + h(repLabel(rep)) : ''}</small></div>
           ${img ? `<div>${h(img.summary || '')} <small class="pe-muted">${h(img.asOf)} 整理</small></div>${img.items.map(i => `<div class="pe-op-line"><span class="pe-chip">${h(i.topic)}</span> ${h(i.belief)} <small class="pe-muted">${h(SPREAD[i.spread] || '')} · 依据 ${i.basis.length} 条</small></div>`).join('')}` : '<div class="pe-muted">还没有整理</div>'}</div>
           <div class="pe-card-actions"><button data-act="pi-gen" data-circle="${c}" ${n.evs.length + n.claims.length + n.rumors.length ? '' : 'disabled'}>${img ? '更新' : '整理'}</button></div></div>`;
     }).join('');

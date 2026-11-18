@@ -149,7 +149,7 @@ ${eraBrief(era, 400)}
 5. 只输出 JSON：
 ${IMAGE_SCHEMA}`;
     const user = `【作者】署名“${pen?.name || '?'}”（这个圈子${pen?.publicIdentityKnown ? '知道' : '不知道'}署名背后是谁）
-【圈子】${CIRCLES[circle] || circle}${rep != null ? `；推演中的声誉：${repLabel(rep)}` : ''}
+【圈子】${CIRCLES[circle] || circle}${rep ? `；推演中的名声：${repLabel(rep)}` : ''}
 【公开材料】
 ${evs.length ? evs.map(evLine).join('\n') : '（没有见报文章）'}
 ${claims.length ? claims.map((c, i) => `C${i + 1} ${c.since || ''} 作者公开说过：${c.text}`).join('\n') : ''}

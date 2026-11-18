@@ -262,14 +262,35 @@ export function columnSlots(outlet, from, to) {
     return out;
 }
 
-export function repLabel(v) {
-    const n = Math.round(clamp(v || 0, -2, 2));
-    return { '-2': '声名狼藉', '-1': '颇受非议', '0': '默默无闻', '1': '小有名气', '2': '声誉卓著' }[String(n)];
+/**
+ * 名声拆成两件事：
+ *   知名度 fame —— 有多少人知道这个署名（书评、论战、书讯、读者来信、转载都会让人知道，批评也一样）；
+ *   评价 —— 读过并公开表态的人整体偏肯定还是偏批评（加权平均，不是累加：四篇好评不会直接变成“备受推崇”）。
+ */
+export const FAME_LEVELS = [[0.1, '无人知晓'], [0.4, '有人听说'], [1.2, '开始受到关注'], [2.8, '小有名气'], [4.5, '颇有名气'], [Infinity, '声名远播']];
+export function fameLabel(f) { return FAME_LEVELS.find(([t]) => (f || 0) < t)[1]; }
+/** 评价：w 是表态的总分量，mean 是加权平均褒贬（-1…1） */
+export function esteemLabel(r) {
+    if (!r || (r.w || 0) < 0.1) return '尚无评价';
+    const m = r.mean || 0;
+    if ((r.pos || 0) >= 0.3 && (r.neg || 0) >= 0.3 && Math.abs(m) < 0.5) return '褒贬不一';
+    if (m >= 0.8 && r.w >= 2.5) return '备受推崇';
+    if (m >= 0.4) return '口碑不错';
+    if (m <= -0.8 && r.w >= 2.5) return '恶评如潮';
+    if (m <= -0.4) return '颇受非议';
+    return '评价平平';
+}
+/** 兼容旧调用：传入一个圈子的名声对象，给一句话 */
+export function repLabel(r) {
+    if (typeof r === 'number') return esteemLabel({ w: Math.abs(r) ? 1 : 0, mean: Math.max(-1, Math.min(1, r / 2)) });
+    if (!r) return '无人知晓';
+    const f = fameLabel(r.fame);
+    return (r.fame || 0) < 0.1 ? f : `${f}，${esteemLabel(r)}`;
 }
 
 function fameFactor(state, pennameId) {
     const rep = state.reputation?.[pennameId] || {};
-    const avg = ((rep.critics || 0) + (rep.literary || 0)) / 2;
+    const avg = ((rep.critics?.fame || 0) + (rep.literary?.fame || 0)) / 2;
     return clamp(1 + 0.25 * avg, 0.7, 1.5);
 }
 
@@ -347,18 +368,20 @@ export function isMajor(state, ev) {
 
 // ———————————— 声誉 ————————————
 
+// 各类反响让多少人知道这个署名（再乘刊物影响力）；读者来信按封数取对数，82 封比 20 封多，但不是四倍
+const FAME_W = { review: 0.35, polemic: 0.3, notice: 0.1, echo: 0.06 };
 function repDelta(state, ev) {
     const info = LAYERS[ev.layer];
     if (!info || !ev.pennameId) return null;
     const outlet = byId(state.outlets, ev.outletId);
-    if (ev.layer === 'reader_letters') return { circle: 'general', delta: (ev.count || 0) >= 20 ? 0.1 : 0.03 };
-    if (ev.layer === 'mentions') return { circle: 'general', delta: Math.min(0.15, 0.02 * (ev.count || 0)) };
+    const tierF = 0.6 + 0.15 * (outlet?.tier || 3);
+    if (ev.layer === 'reader_letters') return { circle: 'general', fame: +(0.04 * Math.log2(1 + (ev.count || 0)) * tierF).toFixed(3), esteemW: 0 };
+    if (ev.layer === 'mentions') return { circle: 'general', fame: +(0.03 * Math.min(10, ev.count || 1)).toFixed(3), esteemW: 0 };
     if (!info.public) return null;
-    const delta = ev.polarity > 0 ? info.repWeight : ev.polarity < 0 ? -info.repWeight * 0.5 : info.repWeight * 0.3;
-    return { circle: outlet?.circle || 'general', delta };
+    return { circle: outlet?.circle || 'general', fame: +((FAME_W[ev.layer] ?? 0.1) * tierF).toFixed(3), esteemW: info.repWeight, pol: Math.sign(ev.polarity || 0) };
 }
 
-/** 声誉完全由“已批准事件”按日期顺序算出，因此回滚、撤销后总能自洽 */
+/** 名声完全由“已入账事件”按日期顺序算出，因此回滚、撤销后总能自洽 */
 export function recomputeReputation(state) {
     const rep = {};
     const list = (state.ledger || []).filter(e => e.status === 'approved').sort((a, b) => cmp(a.date, b.date));
@@ -366,13 +389,42 @@ export function recomputeReputation(state) {
         const d = repDelta(state, ev);
         ev.repApplied = null;
         if (!d) continue;
-        const r = (rep[ev.pennameId] = rep[ev.pennameId] || {});
-        const before = r[d.circle] || 0;
-        const after = clamp(before + d.delta, -2, 2);
-        r[d.circle] = +after.toFixed(3);
-        ev.repApplied = { penId: ev.pennameId, circle: d.circle, delta: +(after - before).toFixed(3) };
+        const pr = (rep[ev.pennameId] = rep[ev.pennameId] || {});
+        const r = (pr[d.circle] = pr[d.circle] || { fame: 0, w: 0, sum: 0, pos: 0, neg: 0, n: 0 });
+        // 知名度边际递减：越有名，再多一篇的增量越小
+        const add = d.fame * (1 - Math.min(0.8, r.fame / 6));
+        r.fame = +(r.fame + add).toFixed(3);
+        if (d.esteemW) {
+            r.w = +(r.w + d.esteemW).toFixed(3); r.sum += d.esteemW * d.pol; r.n++;
+            if (d.pol > 0) r.pos = +(r.pos + d.esteemW).toFixed(3); else if (d.pol < 0) r.neg = +(r.neg + d.esteemW).toFixed(3);
+            r.mean = +(r.sum / r.w).toFixed(3);
+        }
+        ev.repApplied = { penId: ev.pennameId, circle: d.circle, fame: +add.toFixed(3), pol: d.esteemW ? d.pol : null };
     }
     state.reputation = rep;
+}
+
+/** 名声明细：某笔名某圈子由哪些已入账事件构成 */
+export function repBreakdown(state, penId, circle) {
+    return (state.ledger || []).filter(e => e.status === 'approved' && e.repApplied?.penId === penId && e.repApplied.circle === circle).sort((a, b) => cmp(a.date, b.date));
+}
+/** 名声体检：已入账的公开反响里，署名对不上的（没有笔名、笔名已不存在、和作品的署名不一致） */
+export function repOrphans(state) {
+    const pens = new Set((state.pennames || []).map(p => p.id));
+    return (state.ledger || []).filter(e => e.status === 'approved' && (LAYERS[e.layer]?.public || e.layer === 'reader_letters') && e.workId).map(e => {
+        const w = byId(state.works, e.workId);
+        const want = w?.pennameId || null;
+        if (!e.pennameId) return { ev: e, why: '没有关联笔名', want };
+        if (!pens.has(e.pennameId)) return { ev: e, why: '关联的笔名已不存在', want };
+        if (want && e.pennameId !== want) return { ev: e, why: '和作品的署名不一致', want };
+        return null;
+    }).filter(Boolean);
+}
+export function fixRepOrphans(state) {
+    let n = 0;
+    for (const x of repOrphans(state)) if (x.want) { x.ev.pennameId = x.want; n++; }
+    recomputeReputation(state);
+    return n;
 }
 
 /** 每次掷骰编一个递增序号：回滚时只需记下“当时编到第几号”，不用复制整张表 */
@@ -404,7 +456,7 @@ function contactStage(state, s, era, work, person, seed, extra) {
         const close = person.closeness || 0;
         if (close >= 2 || knowsPen(state, person, work.pennameId)) add('friend', close >= 3 ? 0.8 : 0.6, [2, 10]);
         const rep = state.reputation?.[work.pennameId] || {};
-        add('buzz', clamp(0.05 + 0.05 * Math.max(0, (rep.general || 0) + (rep.literary || 0)), 0.05, 0.3), [3, 20]);
+        add('buzz', clamp(0.05 + 0.04 * ((rep.general?.fame || 0) + (rep.literary?.fame || 0)), 0.05, 0.3), [3, 20]);
         // 追读：此前读了同一笔名的作品、决定找这位作者的东西看
         // 作者印象：只用发表日之前形成的印象（不让以后的印象倒流）
         const imp = impressionAt(state, work.pennameId, person.id, work.pubDate);
@@ -614,7 +666,7 @@ function shelfStage(state, s, era, seed, newDate, report) {
         if (!months.length) continue;
         const versions = new Set([work.id, work.parentId, ...(state.works || []).filter(w => w.parentId === work.id).map(w => w.id)].filter(Boolean));
         const rep = state.reputation?.[work.pennameId] || {};
-        const repF = clamp(1 + 0.5 * Math.max(0, (rep.general || 0) + (rep.literary || 0)), 1, 2.5);
+        const repF = clamp(1 + 0.3 * ((rep.general?.fame || 0) + (rep.literary?.fame || 0)), 1, 2.5);
         const base = SHELF_BASE[work.form] ?? 0.05;
         for (const person of state.persons || []) {
             if (person.active === false) continue;

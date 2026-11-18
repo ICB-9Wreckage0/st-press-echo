@@ -517,4 +517,26 @@ function base(seed = 'reg') {
     if (oid) { const before = r.ledger.filter(e => e.outletId === oid && e.status === 'approved').length; const k = E.rerollOutlet(r, oid); assert(k > 0); assert.equal(r.ledger.filter(e => e.outletId === oid && e.status === 'approved').length, before, '已入账的不动'); }
     ok('题材兴趣递减计算；月刊没填出刊日标“约某月号”；书讯多半以刊物名义不署名；改了刊物周期能重排未入账的反响');
 }
+// 26. 名声拆成知名度与评价：批评也让人知道；读者来信按封数递增；四篇好评不直接“备受推崇”；署名对不上的能查出并修复
+{
+    const t = base('fm'); t.currentDate = '1890-09-01';
+    const mk = (id, layer, pol, extra = {}) => ({ id, origin: 'manual', date: '1890-06-0' + (t.ledger.length % 9 + 1), layer, personId: 'gour', outletId: 'merc', workId: 'aine', pennameId: 'ee', polarity: pol, status: 'approved', flags: [], ...extra });
+    t.ledger.push(mk('n1', 'review', -1), mk('n2', 'polemic', -1));
+    E.recomputeReputation(t);
+    const c = t.outlets.find(o => o.id === 'merc').circle;
+    const r1 = t.reputation.ee[c];
+    assert(r1.fame > 0.4 && E.esteemLabel(r1) !== '口碑不错', '被批评也有知名度，评价偏坏');
+    const t2 = base('fm2');
+    t2.ledger.push({ ...mk('a', 'reader_letters', 0, { count: 82 }) }, { ...mk('b', 'reader_letters', 0, { count: 20 }) });
+    E.recomputeReputation(t2);
+    const [a, b] = ['a', 'b'].map(id => t2.ledger.find(e => e.id === id).repApplied.fame);
+    assert(a > b * 1.2, `82 封比 20 封多（${a} vs ${b}）`);
+    const t3 = base('fm3');
+    for (let i = 0; i < 4; i++) t3.ledger.push(mk('p' + i, 'review', 1));
+    E.recomputeReputation(t3);
+    assert.notEqual(E.esteemLabel(t3.reputation.ee[c]), '备受推崇', '四篇好评是口碑不错，不是备受推崇');
+    t3.ledger[0].pennameId = 'ghost'; E.recomputeReputation(t3);
+    assert.equal(E.repOrphans(t3).length, 1); E.fixRepOrphans(t3); assert.equal(E.repOrphans(t3).length, 0);
+    ok('名声拆成知名度与评价：批评也让人知道、读者来信按封数递增、好评取平均不累加；署名对不上的能查出并修复');
+}
 console.log('回归测试全部通过');

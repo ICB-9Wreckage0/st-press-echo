@@ -25,7 +25,7 @@ export function buildInjection(state, era, settings) {
     for (const pen of state.pennames || []) {
         const rep = state.reputation?.[pen.id];
         if (!rep) continue;
-        const parts = Object.entries(rep).filter(([, v]) => Math.abs(v) >= 0.2).map(([c, v]) => `${CIRCLES[c] || c}${repLabel(v)}`);
+        const parts = Object.entries(rep).filter(([, v]) => typeof v === 'object' && (v.fame || 0) >= 0.4).map(([c, v]) => `${CIRCLES[c] || c}：${repLabel(v)}`);
         if (parts.length) L.push(`署名“${pen.name}”的名声：${parts.join('，')}${pen.publicIdentityKnown ? '' : '（公众不知其真实身份）'}`);
     }
 

@@ -824,3 +824,18 @@ span.pe-pol:not(.pe-chip) { font-size: .9em; padding: 0 4px; border: 1px solid; 
 .pe-secret-wrap .pe-secret { flex: 1 1 14em; min-width: 12em; }
 .pe-model-wrap input { flex: 1 1 12em; min-width: 10em; }
 .pe-model-wrap select { flex: 1 1 12em; max-width: 20em; }
+.pe-repbtn { all: unset; cursor: pointer; display: block; width: 100%; border-radius: 4px; }
+.pe-repbtn:hover { outline: 1px solid var(--pe-accent); }
+.pe-rep small { display: block; font-size: .8em; opacity: .85; }
+.pe-fame0 { opacity: .5; } .pe-fame1 { opacity: .75; }
+.pe-fame3 div, .pe-fame4 div, .pe-fame5 div { font-weight: 700; color: var(--pe-accent); }
+.pe-est1 { color: #8fc9a8; } .pe-est-1 { color: #e08a7a; }
+.pe-rep-table { table-layout: fixed; width: 100%; }
+.pe-rep-table th:first-child, .pe-rep-table td:first-child { width: 4.5em; }
+.pe-rep-table th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: .9em; }
+.pe-rep-table td { text-align: center; vertical-align: middle; padding: 6px 2px; }
+.pe-repbtn > div, .pe-repbtn > small, .pe-rep > div, .pe-rep > small { display: block; }
+.pe-repbtn { padding: 3px 2px; text-align: center; }
+.pe-rep-table .pe-repbtn { display: flex !important; flex-direction: column; align-items: center; gap: 1px; width: 100%; box-sizing: border-box; white-space: normal; }
+.pe-rep-table .pe-rep > div, .pe-rep-table .pe-rep > small { display: block !important; }
+.pe-rep-table td { overflow: hidden; }
