@@ -37,7 +37,9 @@ export const DEFAULT_SETTINGS = {
     panelOpacity: 90,
     includeHidden: true,
     chatSource: 'summary', // 读聊天：summary=有摘要块的楼只读摘要；full=读全文
+    readUser: false, // 整理时读主角（用户）的发言
     summaryTags: 'Narrative_Matrix',
+    summaryFallback: 'full', // 没有摘要块的楼：full 读全文 / skip 跳过（主角发言仍读）
     knowPublic: 'reads',
     clipDays: 3,
     loreMaxChars: 1500,

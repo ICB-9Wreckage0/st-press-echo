@@ -111,3 +111,12 @@ export function extractSummary(text, tags = 'Narrative_Matrix') {
     }
     return out.join('\n');
 }
+
+/** 去掉混在正文里的思维链：<think>…</think>、<thinking>、<reasoning>（含没闭合、写到开头的情况）。酒馆单独存的 extra.reasoning 本来就不读 */
+export function stripThinking(text) {
+    let t = String(text || '');
+    t = t.replace(/<(think|thinking|reasoning|thought)(?:\s[^>]*)?>[\s\S]*?<\/\1>/gi, '');
+    t = t.replace(/^[\s\S]*?<\/(think|thinking|reasoning|thought)>/i, ''); // 只有结尾标签：前面整段都是思考
+    t = t.replace(/<(think|thinking|reasoning|thought)(?:\s[^>]*)?>[\s\S]*$/i, ''); // 只有开头标签：后面整段都是思考
+    return t.trim();
+}

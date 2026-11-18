@@ -7,7 +7,7 @@
 // 整理包里引用别的东西一律用名字，不用 id；名字对不上时会自动新建或给出提示。
 
 import { normalizeISO, cmp } from './date.js';
-import { extractJSON, uid, isStoryMessage, extractSummary } from './util.js';
+import { extractJSON, uid, isStoryMessage, extractSummary, stripThinking } from './util.js';
 import { storyTimeline } from './segments.js';
 import { callLLM } from './llm.js';
 import { clog } from './console.js';
@@ -701,27 +701,39 @@ ${known ? `\n已知名字（指同一对象时沿用完全相同的写法）：\
  * source='summary'：有摘要块（如 <Narrative_Matrix>）的楼层只取摘要，并在前面标上从正文认出的故事日期；
  * 没有摘要的楼层（主角的发言、还没用摘要格式的旧楼层）照旧用全文。
  */
-export function chatToText(messages, includeHidden = true, { source = 'full', tags = 'Narrative_Matrix', headChars = 160, maxUser = 2000 } = {}) {
-    const story = (messages || []).filter(m => isStoryMessage(m, includeHidden));
+export function chatToText(messages, includeHidden = true, { source = 'full', tags = 'Narrative_Matrix', headChars = 160, maxUser = 2000, fallback = 'full', skipUser = false } = {}) {
+    const story = (messages || []).filter(m => isStoryMessage(m, includeHidden)).map(m => ({ ...m, mes: stripThinking(m.mes) })).filter(m => m.mes);
     const who = m => m.name || (m.is_user ? '用户' : '角色');
-    if (source !== 'summary') return story.map(m => `${who(m)}：${m.mes}`).join('\n\n');
+    if (source !== 'summary') return story.filter(m => !(skipUser && m.is_user)).map(m => `${who(m)}：${m.mes}`).join('\n\n');
     const tl = storyTimeline(story, { headChars, includeHidden });
     let lastDate = null;
     return story.map((m, i) => {
         const sum = extractSummary(m.mes, tags);
         const d = tl[i]?.iso;
+        if (!sum && ((!m.is_user && fallback === 'skip') || (m.is_user && skipUser))) return '';
         const tag = d && d !== lastDate ? `【故事日期 ${d}】\n` : '';
         if (d) lastDate = d;
         if (sum) return `${tag}${who(m)}（本楼摘要）：${sum}`;
         const body = m.is_user && m.mes.length > maxUser ? m.mes.slice(0, maxUser) + '……' : m.mes;
         return `${tag}${who(m)}：${body}`;
-    }).join('\n\n');
+    }).filter(Boolean).join('\n\n');
 }
-/** 估算：有多少楼带摘要块 */
-export function summaryCoverage(messages, includeHidden = true, tags = 'Narrative_Matrix') {
-    const story = (messages || []).filter(m => isStoryMessage(m, includeHidden));
-    const n = story.filter(m => extractSummary(m.mes, tags)).length;
-    return { total: story.length, withSummary: n, fullChars: story.reduce((a, m) => a + m.mes.length, 0) };
+/** 估算：有多少楼带摘要块，字数都花在哪 */
+export function summaryCoverage(messages, includeHidden = true, tags = 'Narrative_Matrix', offset = 0) {
+    const all = messages || [];
+    const out = { total: 0, withSummary: 0, fullChars: 0, sumChars: 0, userChars: 0, userFloors: 0, otherChars: 0, otherFloors: 0, biggest: [] };
+    all.forEach((m, k) => {
+        if (!isStoryMessage(m, includeHidden)) return;
+        const mes = stripThinking(m.mes);
+        out.total++; out.fullChars += mes.length;
+        const sm = extractSummary(mes, tags);
+        if (sm) { out.withSummary++; out.sumChars += sm.length; return; }
+        if (m.is_user) { out.userFloors++; out.userChars += Math.min(mes.length, 2000); return; }
+        out.otherFloors++; out.otherChars += mes.length;
+        out.biggest.push({ i: k + offset, chars: mes.length });
+    });
+    out.biggest = out.biggest.sort((a, b) => b.chars - a.chars).slice(0, 5);
+    return out;
 }
 export function parseJsonl(text) {
     const out = [];

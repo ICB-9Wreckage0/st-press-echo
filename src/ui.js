@@ -1379,10 +1379,14 @@ function chatMaterial(from, to, label) {
     const msgs = chat.slice(from, to + 1);
     const hid = msgs.filter(m => m?.is_system && isStoryMessage(m, true)).length;
     const o = chatOpts();
-    const cov = o.source === 'summary' ? summaryCoverage(msgs, inc, o.tags) : null;
+    const cov = o.source === 'summary' ? summaryCoverage(msgs, inc, o.tags, from) : null;
+    if (cov && o.skipUser) cov.userChars = 0;
     const text = chatToText(msgs, inc, o);
-    const sumNote = cov ? (cov.withSummary ? `，${cov.withSummary}/${cov.total} 楼只读摘要，原文 ${(cov.fullChars / 10000).toFixed(1)} 万字 → ${(text.length / 10000).toFixed(1)} 万字` : '，没找到摘要块，读全文') : '';
-    return { id: uid(), label: `${label}（#${from}–#${to}，${msgs.length} 楼${hid ? (inc ? `，含隐藏 ${hid} 楼` : `，不含隐藏的 ${hid} 楼`) : ''}${sumNote}）`, kind: '聊天记录', text, range: { from, to } };
+    const wan = n => (n / 10000).toFixed(1) + ' 万';
+    const sumNote = cov ? (cov.withSummary ? `，${cov.withSummary}/${cov.total} 楼只读摘要，原文 ${wan(cov.fullChars)}字 → ${wan(text.length)}字` : `，在 ${cov.total} 楼里没找到 <${o.tags}> 摘要块，读全文`) : '，读全文';
+    const detail = cov ? [`摘要 ${cov.withSummary} 楼 ${wan(cov.sumChars)}字`, `主角发言 ${cov.userFloors} 楼 ${wan(cov.userChars)}字${o.skipUser ? '（已按设置跳过）' : ''}`, `没有摘要块的其他楼 ${cov.otherFloors} 楼 ${wan(cov.otherChars)}字${o.fallback === 'skip' ? '（已按设置跳过）' : ''}`].join(' · ')
+        + (cov.otherFloors && o.fallback !== 'skip' ? `。最长的几楼：${cov.biggest.map(x => `#${x.i}（${wan(x.chars)}字）`).join('、')}` : '') : '';
+    return { id: uid(), label: `${label}（#${from}–#${to}，${msgs.length} 楼${hid ? (inc ? `，含隐藏 ${hid} 楼` : `，不含隐藏的 ${hid} 楼`) : ''}${sumNote}）`, kind: '聊天记录', text, detail, range: { from, to }, rawLabel: label };
 }
 function pointerBlock(st) {
     const chat = chatNow();
@@ -1418,8 +1422,8 @@ function organizerBlock(st) {
       </ul>
       <textarea id="pe-import-text" rows="4" placeholder="也可以把设定、笔记、某段剧情粘贴在这里，再点“加入材料”。"></textarea>
       <div class="pe-toolbar"><button data-act="org-paste">加入材料</button></div>
-      ${materials.length ? `<div class="pe-org-list">${materials.map(m => `<div class="pe-card pe-card-slim"><div class="pe-card-main"><span class="pe-chip pe-chip-layer">${h(m.kind)}</span> ${h(m.label)} <span class="pe-muted">${m.text.length.toLocaleString()} 字 · ${chunkMaterial(m.text).length} 段</span></div>
-          <div class="pe-card-actions pe-card-actions-row"><button class="pe-mini" data-act="org-del" data-id="${m.id}">移除</button></div></div>`).join('')}</div>
+      ${materials.length ? `<div class="pe-org-list">${materials.map(m => `<div class="pe-card pe-card-slim"><div class="pe-card-main"><span class="pe-chip pe-chip-layer">${h(m.kind)}</span> ${h(m.label)} <span class="pe-muted">${m.text.length.toLocaleString()} 字 · ${chunkMaterial(m.text).length} 段</span>${m.detail ? `<div class="pe-muted">${h(m.detail)}</div>` : ''}</div>
+          <div class="pe-card-actions pe-card-actions-row">${m.range ? `<button class="pe-mini" data-act="org-reread" data-id="${m.id}" title="改了“读摘要”之类的设置后，按现在的设置重新读这段聊天">按当前设置重读</button>` : ''}<button class="pe-mini" data-act="org-del" data-id="${m.id}">移除</button></div></div>`).join('')}</div>
         <div class="pe-callout ${calls > 40 ? 'pe-callout-warn' : 'pe-callout-accent'}">共 ${chars.toLocaleString()} 字，约 <b>${calls}</b> 次模型调用。${calls > 40 ? '材料很长：用插件逐段整理会比较慢、耗费也多，可以考虑下面的“用外部 AI 整理”，长上下文的聊天 AI 一次就能读完。' : ''}
           ${orgAbort ? '<button data-act="org-stop">停止</button>' : `<button data-act="org-clear">清空材料</button><button class="pe-primary" data-act="org-run">开始整理</button>`}</div>` : ''}
       ${txtPlan.length ? `<div class="pe-muted">另有 ${txtPlan.length} 个作品原文 txt 已放进 <a class="pe-link" data-tab-go="works">作品页</a> 的导入列表。</div>` : ''}
@@ -1611,6 +1615,8 @@ const SETTINGS_SPEC = [
     { key: 'clipDays', label: '剪报几天后送到', type: 'number', hint: '0 = 没有剪报服务：不常读的报刊上的文章（包括各报转载汇总），主角要等聊天里提到或你标记才知道' },
     { key: 'panelOpacity', label: '面板不透明度', type: 'range', min: 0, max: 100, step: 5, unit: '%', hint: '拖动时立刻生效。100% 完全挡住后面的聊天文字；0% 完全跟随酒馆主题（主题半透明时会透出后面的字）' },
     { key: 'chatSource', label: '整理聊天时读什么', type: 'select', options: { summary: '有摘要块的楼只读摘要（省 token）', full: '读全文' }, hint: '一键整理、AI 补完参考最近剧情时用。摘要模式下，每楼开头认出的故事日期会标在摘要前面；没有摘要块的楼（主角的发言、旧楼层）照旧读全文。回溯分段认日期始终读全文' },
+    { key: 'summaryFallback', label: '没有摘要块的楼', type: 'select', options: { full: '读全文', skip: '跳过（主角的发言仍然读）' }, hint: '用摘要格式之前的旧楼层通常没有摘要块，会按全文读，字数主要花在这里。旧楼层已经整理过、或你不在乎的话，选“跳过”' },
+    { key: 'readUser', label: '读主角（用户）的发言', type: 'checkbox', hint: '关掉就只读 AI 生成的楼层。省字数，但主角当面说的话、做的决定（例如答应给谁写稿、把构想讲给谁听）只在你的发言里的话，整理时就会漏掉——AI 楼层的摘要通常会复述，可以先看一段的摘要里有没有' },
     { key: 'summaryTags', label: '摘要块的标签名', hint: '如 Narrative_Matrix，就读 <Narrative_Matrix>…</Narrative_Matrix> 里的内容。多个用逗号分隔' },
     { key: 'includeHidden', label: '读取隐藏的楼层', type: 'checkbox', hint: '用“隐藏楼层”省 token 时，被隐藏的楼层仍然是剧情：回溯推演分段、一键整理当前聊天、AI 补完参考的最近剧情都会读它们。关掉就只读没隐藏的' },
     { key: 'injectEnabled', label: '向主对话注入报刊现状', type: 'checkbox' },
@@ -1644,7 +1650,7 @@ const SETTINGS_SPEC = [
 
 const SET_GROUPS = [
     { title: '基本', desc: '插件开关、审核方式与面板外观', keys: ['enabled', 'autoApprove', 'panelOpacity'] },
-    { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvanceMode', 'autoAdvanceDays', 'maxJumpDays', 'headChars', 'includeHidden', 'chatSource', 'summaryTags'] },
+    { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvanceMode', 'autoAdvanceDays', 'maxJumpDays', 'headChars', 'includeHidden', 'chatSource', 'readUser', 'summaryTags', 'summaryFallback'] },
     { title: '世界书', desc: '让主对话里的 NPC 知道自己读过什么、怎么看', keys: ['loreEnabled', 'loreAuto', 'loreBook', 'loreScope', 'loreWorks', 'loreMaxChars', 'loreBindChat'] },
     { title: '书信簿联动', desc: '与 st-epistolary 书信簿插件配合', keys: ['epiEnabled', 'epiSyncDate', 'epiSendAuto'] },
     { title: '推演', desc: '只影响概率，不调用模型', keys: ['intensity', 'rumorHalfLife'], extra: 'layerMult' },
@@ -1866,6 +1872,14 @@ async function onClick(e) {
             const v = parseInt(document.getElementById('pe-org-mark')?.value, 10);
             if (!Number.isFinite(v)) return toast('warning', '填楼号（酒馆消息上的 #编号）');
             setOrgMark(st, v, '手动设定'); commit(v < 0 ? '指针已清除' : `指针设到 #${st.orgMark.mes}`); break;
+        }
+        case 'org-reread': {
+            const i = materials.findIndex(x => x.id === btn.dataset.id);
+            const m = materials[i];
+            if (!m?.range) break;
+            const nm = chatMaterial(m.range.from, m.range.to, m.rawLabel || '当前聊天');
+            materials[i] = nm;
+            refresh(); toast('success', `重读完：${m.text.length.toLocaleString()} 字 → ${nm.text.length.toLocaleString()} 字`); break;
         }
         case 'org-mark-end': setOrgMark(st, chatNow().length - 1, '手动设为最新'); commit(`指针设到 #${st.orgMark.mes}`); break;
         case 'org-mark-clear': st.orgMark = null; commit('指针已清除'); break;
@@ -2885,12 +2899,12 @@ function lastFillTo(st, prev = false) {
     if (prev) return ds.length >= 2 ? ds[ds.length - 2].to : ds[0]?.from || null;
     return ds.length ? ds[ds.length - 1].to : null;
 }
-const chatOpts = () => { const g = getSettings(); return { source: g.chatSource || 'summary', tags: g.summaryTags || 'Narrative_Matrix', headChars: g.headChars }; };
+const chatOpts = () => { const g = getSettings(); return { source: g.chatSource || 'summary', tags: g.summaryTags || 'Narrative_Matrix', headChars: g.headChars, fallback: g.summaryFallback || 'full', skipUser: g.readUser !== true }; };
 function chatTail(n = 8, max = 5000, skip = 0) {
     const c = globalThis.SillyTavern?.getContext?.();
     const all = c?.chat || [];
     const msgs = all.slice(0, Math.max(0, all.length - skip)).filter(m => isStoryMessage(m, getSettings().includeHidden !== false)).slice(-n);
-    let t = chatOpts().source === 'summary' ? chatToText(msgs, true, chatOpts()) : msgs.map(m => `${m.name || ''}：${m.mes}`).join('\n\n');
+    let t = chatToText(msgs, true, chatOpts());
     if (t.length > max) t = '……' + t.slice(-max);
     return t;
 }

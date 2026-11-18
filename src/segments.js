@@ -3,7 +3,7 @@
 // 超过目标日期的不要；一下往前跳太多、后面几楼又没跟上的，当成顺口一提。
 
 import { cmp, addDays, diffDays, pickStoryDate } from './date.js';
-import { isStoryMessage } from './util.js';
+import { isStoryMessage, stripThinking } from './util.js';
 
 const JUMP_CHECK = 14; // 一次往前跳超过这么多天，要后面的楼层确认
 const LOOKAHEAD = 6;
@@ -14,8 +14,9 @@ export function storyTimeline(chat, { target = null, headChars = 160, includeHid
     const rows = [];
     (chat || []).forEach((m, i) => {
         if (!isStoryMessage(m, includeHidden)) return;
-        const p = pickStoryDate(m.mes || '', null, { headChars });
-        rows.push({ i, chars: String(m.mes || '').length, raw: p?.iso || null });
+        const mes = stripThinking(m.mes);
+        const p = pickStoryDate(mes, null, { headChars });
+        rows.push({ i, chars: mes.length, raw: p?.iso || null });
     });
     let acc = null;
     rows.forEach((r, k) => {
