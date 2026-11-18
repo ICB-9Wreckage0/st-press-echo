@@ -283,10 +283,27 @@ function between(seed, key, [lo, hi]) {
     return lo + Math.floor(roll(seed, key) * (hi - lo + 1));
 }
 
-function interestOf(person, tags) {
+/**
+ * 题材兴趣：命中的标签越多越高，但边际递减，而且要看命中的占作品题材的多大比例——
+ * 只沾上一两个边的（如女权刊物遇到一篇讲宪制危机、顺带写了寡妇的作品）落在五六成，不会算成九成。
+ * 1 个命中约 0.3，2 个约 0.5，3 个约 0.65；全部命中才到 0.9 以上。
+ */
+export function interestOf(person, tags) {
     const pool = [...(person.interests || []), ...(person.likes || []), ...(person.dislikes || []), ...(person.stances || []).map(x => x?.issue).filter(Boolean)];
-    return clamp((matchCount(pool, tags, true) / Math.max(1, tags.length)) * 2, 0, 1);
+    const m = matchCount(pool, tags, true);
+    if (!m) return 0;
+    const frac = Math.min(1, m / Math.max(1, tags.length));
+    return clamp((1 - Math.pow(0.6, m)) * (0.55 + 0.45 * frac), 0, 0.95);
 }
+/** 月刊、半月刊没填出刊日时，排出来的日期只是约略（按每月 1 日 / 1、15 日算） */
+export function approxIssue(state, ev) {
+    const o = byId(state.outlets, ev.outletId);
+    if (!o || !['monthly', 'biweekly'].includes(o.periodicity) || o.monthDays?.length) return null;
+    const m = Number(ev.date.slice(5, 7));
+    return o.periodicity === 'monthly' ? `${m} 月号` : `${m} 月${Number(ev.date.slice(8, 10)) < 15 ? '上' : '下'}半月号`;
+}
+/** 书讯、回声多以刊物名义刊出：推演里仍记着是谁写的（他的看法），但版面上不署名，主角也不知道执笔者 */
+const UNSIGNED_P = { notice: 0.65, echo: 0.75, review: 0.15, polemic: 0.05 };
 
 /** 立场：欣赏/反感标签对作品标签（含发表刊物的倾向）的重叠 */
 export function computePolarity(state, person, work, r, layer) {
@@ -529,7 +546,8 @@ function expressionStage(state, s, era, work, person, read, op, seed, via) {
         if (slot.date && s.publicBefore && cmp(slot.date, s.publicBefore) <= 0) {
             why.push(`想写${LAYERS[pick.layer].label}（约 ${slot.date} 见报），但这段时间的公开报道以已导入的记录为准 → 不另行推演，记为私下谈起`);
         } else if (slot.date) {
-            why.push(`决定写${LAYERS[pick.layer].label}，约 ${writeReady} 可以交稿；${pick.outlet.name}截稿提前 ${slot.deadline} 天、每期至多 ${slot.cap} 篇 → 排在 ${slot.date}`);
+            const ap = ['monthly', 'biweekly'].includes(pick.outlet.periodicity) && !pick.outlet.monthDays?.length;
+            why.push(`决定写${LAYERS[pick.layer].label}，约 ${writeReady} 可以交稿；${pick.outlet.name}（${PERIODICITY[pick.outlet.periodicity] || '?'}）截稿提前 ${slot.deadline} 天、每期至多 ${slot.cap} 篇 → 排在 ${slot.date}${ap ? `（没填出刊日，按${pick.outlet.periodicity === 'monthly' ? '每月 1 日' : '每月 1、15 日'}约略推算，只能说是 ${Number(slot.date.slice(5, 7))} 月的一期）` : ''}`);
             out.events.push({ layer: pick.layer, outletId: pick.outlet.id, date: slot.date, polarity: pick.layer === 'polemic' && op.polarity === 0 ? -1 : op.polarity, reactsTo: pick.layer === 'polemic' && via ? via.id : null, irregular: pick.outlet.periodicity === 'irregular' && !pick.outlet.issueDates?.length });
             out.expression = 'public';
             published = true;
@@ -688,6 +706,11 @@ function runPipeline(state, s, era, work, person, seed, report, opts = {}) {
                 to: e.layer === 'private_letter' ? 'protagonist' : null, knownAt: e.date,
                 text: null, flags: e.irregular ? ['不定期刊物：这期哪天出、是否真的出了，并不确定，请核对'] : [], repApplied: null, why: rec.why.slice(),
             };
+            if (LAYERS[e.layer]?.public && roll(seed, `${ev.key}|unsigned`) < (UNSIGNED_P[e.layer] ?? 0)) {
+                ev.unsigned = true;
+                ev.why.push(`以《${byId(state.outlets, e.outletId)?.name || '本刊'}》名义刊出，不署名（${LAYERS[e.layer].label}多半如此）：版面上看不出是 ${person.name} 写的`);
+            }
+            if (approxIssue(state, ev)) ev.flags.push(`${PERIODICITY[byId(state.outlets, e.outletId)?.periodicity]}没填出刊日：日期只是约略，算作 ${approxIssue(state, ev)}`);
             state.ledger.push(ev);
             rec.eventIds.push(ev.id);
             report.scheduled++;
@@ -1139,6 +1162,22 @@ export function rerollWork(state, workId) {
     state.ledger = state.ledger.filter(e => !(e.workId === workId && e.origin === 'engine' && e.status !== 'approved' && (dropEv.has(e.id) || !e.receptionId)));
     state.receptions = (state.receptions || []).filter(keepRec);
     recomputeReputation(state);
+}
+
+/** 刊物资料（周期、出刊日）改了之后：撤掉还没入账、要登在这家刊物上的推演反响及其阅读记录，下次推演按新周期重排 */
+export function rerollOutlet(state, outletId) {
+    const evs = (state.ledger || []).filter(e => e.outletId === outletId && e.origin === 'engine' && e.status !== 'approved' && e.receptionId);
+    const recIds = new Set(evs.map(e => e.receptionId));
+    // 同一条阅读记录下若已有入账的反响，就不动它
+    for (const r of state.receptions || []) if (recIds.has(r.id) && (r.eventIds || []).some(id => state.ledger.find(e => e.id === id)?.status === 'approved')) recIds.delete(r.id);
+    const recs = (state.receptions || []).filter(r => recIds.has(r.id) && r.origin !== 'manual');
+    for (const r of recs) for (const k of Object.keys(state.rolls || {})) if (k === r.key || k.startsWith(r.key + '|')) delete state.rolls[k];
+    const drop = new Set(recs.flatMap(r => r.eventIds || []));
+    state.ledger = state.ledger.filter(e => !drop.has(e.id));
+    const ids = new Set(recs.map(r => r.id));
+    state.receptions = (state.receptions || []).filter(r => !ids.has(r.id));
+    recomputeReputation(state);
+    return drop.size;
 }
 
 /** 人物资料改了之后：撤掉此人推演出的、还没入账的阅读和反响，下次推演按新资料重来 */

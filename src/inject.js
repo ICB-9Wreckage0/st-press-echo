@@ -2,7 +2,7 @@
 // 借鉴 World 的“知情边界”：只注入主角此刻能知道的东西；并明确告诉主模型，
 // 列表以外的书评不存在，不得自行编造。
 
-import { LAYERS, CIRCLES, repLabel, knownToUser, byId } from './engine.js';
+import { approxIssue, LAYERS, CIRCLES, repLabel, knownToUser, byId } from './engine.js';
 import { weekdayZh } from './date.js';
 import { truncate } from './util.js';
 import { offscreenLines } from './offscreen.js';
@@ -37,12 +37,13 @@ export function buildInjection(state, era, settings) {
             const person = byId(state.persons, e.personId);
             const outlet = byId(state.outlets, e.outletId);
             const work = byId(state.works, e.workId);
-            const who = person?.name || e.personName || '';
+            const who = e.unsigned ? '（未署名）' : (person?.name || e.personName || '');
             const where = outlet ? `《${outlet.name}》` : '';
             const what = e.layer === 'reader_letters' ? `读者来信约 ${e.count} 封` : e.layer === 'mentions' ? `各报转载/提及约 ${e.count} 条` : (LAYERS[e.layer]?.label || e.layer);
             const pol = (e.layer === 'reader_letters' || e.layer === 'mentions') ? '' : ['（批评）', '（褒贬参半）', '（肯定）'][e.polarity + 1];
             const sum = e.text?.summary ? '：' + truncate(e.text.summary, 70) : '';
-            L.push(`- ${e.date.slice(5)} ${where}${who}${what}${pol}${work ? (e.layer === 'mentions' || e.layer === 'reader_letters' ? '，关于《' : '，评《') + work.title + '》' : ''}${sum}`);
+            const ap = approxIssue(state, e);
+            L.push(`- ${ap ? '约' + ap : e.date.slice(5)} ${where}${who}${what}${pol}${work ? (e.layer === 'mentions' || e.layer === 'reader_letters' ? '，关于《' : '，评《') + work.title + '》' : ''}${sum}`);
         }
     }
 

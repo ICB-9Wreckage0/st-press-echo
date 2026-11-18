@@ -92,6 +92,8 @@ export function defaultState() {
         privateFacts: [], // 主角的私人信息与知情者
         perceptions: [], // 每个人对作者的认知
         factLeaks: [], // 私人信息可能外传的候选
+        outletChecks: [], // AI 核对刊物资料，待确认
+        relSuggestions: [], // AI 查到、待确认的人物关系
         selfImage: [], // 主角怎么看自己（self）、对外怎么说（claim）
         assumed: [], // 主角以为某人 / 某圈子怎么看他
         publicImages: [], // 各读者圈子的公众形象（AI 依据公开材料整理）

@@ -461,4 +461,60 @@ function base(seed = 'reg') {
     assert(!E.findPaths(t, 'mir', 'theo', { asOf: '1890-09-01' }).length, '没有路径就照实说');
     ok('关系网：家人双向、单向不反推；按日期只画有效关系；路径分清“有关系”和“真的传过话”');
 }
+// 24. AI 查人物关系：只收人物表里的真实人物；已有的、之后才开始的不收；只进待确认
+{
+    const R = await import('../src/relsuggest.js');
+    const t = base('rs'); t.currentDate = '1890-09-01';
+    const P = id => t.persons.find(p => p.id === id);
+    P('theo').real = false;
+    P('vin').relations = [{ to: 'mir', type: 'salon' }];
+    const mirName = P('mir').name, gourName = P('gour').name, vinName = P('vin').name, theoName = P('theo').name;
+    globalThis.SillyTavern = { getContext: () => ({ generateRaw: async () => JSON.stringify({
+        relations: [
+            { from: mirName, to: gourName, type: 'friend', closeness: 2, mutual: true, since: '1885', evidence: '互相称赞', source: '书信集', certainty: 'documented' },
+            { from: vinName, to: mirName, type: 'friend', certainty: 'likely' },
+            { from: mirName, to: '莫奈', type: 'friend', certainty: 'documented' },
+            { from: gourName, to: theoName, type: 'friend', certainty: 'documented' },
+            { from: gourName, to: mirName, type: 'rival', since: '1891-03-01', certainty: 'documented' },
+            { from: gourName, to: vinName, type: 'salon', certainty: 'speculative' },
+        ],
+        intermediaries: [{ name: '古斯塔夫·热弗鲁瓦', originalName: 'Gustave Geffroy', connects: [mirName], why: '常见面', certainty: 'likely' }],
+    }) }) };
+    const r = await R.suggestRelations(t, { to: '1890-09-01', era: null, settings: { apiMode: 'st' } });
+    delete globalThis.SillyTavern;
+    assert.equal(r.out.length, 2, '只收两条：米尔博→古尔蒙、古尔蒙→梵高');
+    const a = r.out.find(x => x.fromId === 'mir');
+    assert(a.rel.basis === 'history' && a.rel.since === '1885-01-01' && a.rel.mutual && a.rel.evidence.startsWith('AI 提供，未联网核实'));
+    assert.equal(r.out.find(x => x.fromId === 'gour').rel.basis, 'guess');
+    assert(r.skipped.some(x => x.includes('莫奈')) && r.skipped.some(x => x.includes('虚构')) && r.skipped.some(x => x.includes('已有')) && r.skipped.some(x => x.includes('之后才开始')));
+    assert(t.personSuggestions.some(x => x.kind === 'intermediary' && x.confidence === 'medium'));
+    assert(!(P('mir').relations || []).some(x => x.to === 'gour'), '没采纳之前不写进关系');
+    R.acceptRelSuggestion(t, a);
+    assert(P('mir').relations.some(x => x.to === 'gour' && x.basis === 'history'));
+    assert(E.relationsOf(t, P('gour')).some(x => x.to === 'mir'), '双方都算：古尔蒙那边也生效');
+    ok('AI 查人物关系：只收表里的真实人物，已有/之后才开始的不收；中转人物进推荐；采纳才写进关系');
+}
+// 25. 题材兴趣不再一沾边就九成；月刊没填出刊日标“约某月号”；书讯多半不署名；刊物周期改了能重排
+{
+    const p = { interests: ['女权', '家庭法', '社会改革'] };
+    assert(E.interestOf(p, ['宪制', '法院', '讽刺', '寡妇', '社会改革']) < 0.4, '只沾一个边');
+    assert(E.interestOf(p, ['女权', '家庭法', '社会改革']) > 0.7, '正中核心');
+    const t = base('mo'); t.currentDate = '1890-09-01';
+    const o = t.outlets.find(x => x.id === 'merc'); o.periodicity = 'monthly'; o.monthDays = [];
+    assert.equal(E.approxIssue(t, { outletId: 'merc', date: '1890-07-01' }), '7 月号');
+    o.monthDays = [1]; assert.equal(E.approxIssue(t, { outletId: 'merc', date: '1890-07-01' }), null, '填了出刊日就准了');
+    let un = 0, n = 0;
+    let nr = 0, unr = 0;
+    for (let i = 0; i < 40; i++) { const u = base('un' + i); E.advanceTo(u, '1890-09-01', S, null); for (const e of u.ledger) if (e.origin === 'engine' && ['notice', 'echo'].includes(e.layer)) { n++; if (e.unsigned) un++; } else if (e.origin === 'engine' && e.layer === 'review') { nr++; if (e.unsigned) unr++; } }
+    assert(n >= 2 && un >= 1 && (nr === 0 || unr / nr < 0.5), `书讯/短讯多半不署名（${un}/${n}），书评多署名（${unr}/${nr}）`);
+    const { buildInjection: bi } = await import('../src/inject.js');
+    const u = base('un0'); E.advanceTo(u, '1890-09-01', S, null);
+    const ev = u.ledger.find(e => e.unsigned && e.status === 'approved' && E.LAYERS[e.layer]?.public);
+    if (ev) { ev.seenAt = ev.date; const inj = bi(u, null, { ...S, injectMaxItems: 50 }); assert(inj.includes('（未署名）')); }
+    // 改周期后重排
+    const r = base('ro'); E.advanceTo(r, '1890-09-01', S, null);
+    const oid = (r.ledger.find(e => e.origin === 'engine' && e.status !== 'approved' && e.outletId && e.receptionId) || {}).outletId;
+    if (oid) { const before = r.ledger.filter(e => e.outletId === oid && e.status === 'approved').length; const k = E.rerollOutlet(r, oid); assert(k > 0); assert.equal(r.ledger.filter(e => e.outletId === oid && e.status === 'approved').length, before, '已入账的不动'); }
+    ok('题材兴趣递减计算；月刊没填出刊日标“约某月号”；书讯多半以刊物名义不署名；改了刊物周期能重排未入账的反响');
+}
 console.log('回归测试全部通过');

@@ -57,7 +57,8 @@ ${eraBrief(era)}
 3d. 场合决定语气和重点，不改变立场：私信可以直言，公开书评要顾及读者和刊物，论战聚焦分歧，沙龙交谈挑最可争论的部分。
 3b. 文章必须与“写稿人私下的看法”一致（若提供）。允许平淡：短评可以只说值得一读、或只交代出版消息；书评可以认同论证而反对结论；不要为了热闹制造争议，也不要让每个人都写得格外深刻。
 4. ${stanceOnly ? `写稿人“${person.name}”是真实历史人物：不要替他写成第一人称全文，也不要编造他的原话；改为以第三人称写一段“立场摘要”，说明这篇文章大概会从什么角度、提出什么看法。` : '写稿人若为虚构人物，可直接写全文；文章应符合该刊物的风格与政治立场。'}
-5. 篇幅：${LENGTH[ev.layer] || '300–800 字'}。
+5. 篇幅：${LENGTH[ev.layer] || '300–800 字'}。${ev.unsigned ? `
+5b. 这篇以《${outlet?.name || '本刊'}》的名义刊出，不署名：byline 留空（或只写“本刊”），正文不要透露执笔者是谁，用刊物的口吻（“本刊”“我们”）写。执笔者的看法照样作数。` : ''}
 6. 只输出 JSON：{"title":"标题","byline":"署名（笔名或真名，当时常见用笔名）","section":"栏目名","body":"正文","summary":"不超过80字的内容概要，供以后回顾用"}`;
 
     const lines = [];
@@ -159,7 +160,7 @@ export async function writeEvent(state, ev, era, settings) {
     if (!obj.body || String(obj.body).trim().length < 20) throw new Error('模型返回的正文过短或为空');
     const text = {
         title: String(obj.title || ''),
-        byline: String(obj.byline || ''),
+        byline: ev.unsigned ? '' : String(obj.byline || ''),
         section: String(obj.section || ''),
         body: String(obj.body || ''),
         summary: truncate(String(obj.summary || obj.body).replace(/\s+/g, ' '), 120),

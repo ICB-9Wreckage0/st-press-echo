@@ -10,7 +10,7 @@ import { normalizeISO, cmp } from './date.js';
 import { extractJSON, uid } from './util.js';
 import { callLLM } from './llm.js';
 import { clog } from './console.js';
-import { FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, REL_TYPES, REL_FREQ, setStatus, matchSeenFromChat, recordManualReading, recomputeReputation, normSide, normStrength } from './engine.js';
+import { FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, REL_TYPES, REL_FREQ, setStatus, matchSeenFromChat, rerollOutlet, recordManualReading, recomputeReputation, normSide, normStrength } from './engine.js';
 
 // 以对象为元素的列表按关键字段合并：同一议题/同一文体项目，新的覆盖旧的
 const KEYED = { stances: 'issue', stylePrefs: 'aspect', claims: 'issue' };
@@ -399,7 +399,20 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
     if (on('outlets')) for (const o of b.outlets) {
         const ex = findByName(state.outlets, o.name) || (o.originalName && findByName(state.outlets, o.originalName));
         const data = { name: o.name, originalName: o.originalName, periodicity: o.periodicity, weekday: o.weekday, monthDays: o.monthDays, circle: o.circle, tier: o.tier, politics: o.politics, issueDates: o.issueDates, note: [o.originalName, o.note].filter(Boolean).join('；') };
-        if (ex) { const n = ex.name; fill(ex, data, sync); ex.name = n; ex.real = o.real; } else state.outlets.push({ ...blankOutlet(), ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== '' && v != null)), periodicity: o.periodicity || 'irregular', circle: o.circle || 'general', tier: o.tier || 3, real: o.real });
+        if (ex) {
+            const n = ex.name;
+            const sk = JSON.stringify([ex.periodicity, ex.weekday ?? null, ex.monthDays || [], ex.issueDates || []]);
+            fill(ex, data, sync); ex.name = n; ex.real = o.real;
+            // 出刊周期/出刊日改了：这家刊物上还没入账的推演反响按新周期重排（已入账的不动）
+            if (sk !== JSON.stringify([ex.periodicity, ex.weekday ?? null, ex.monthDays || [], ex.issueDates || []])) {
+                if (!['weekly'].includes(ex.periodicity)) ex.weekday = null;
+                if (!['monthly', 'biweekly'].includes(ex.periodicity)) ex.monthDays = [];
+                if (o.periodicity) ex.deadlineDays = null;
+                const k = rerollOutlet(state, ex.id);
+                report.rerolled = (report.rerolled || 0) + k; report.outletFix = true;
+                report.lines.push(`《${n}》出刊周期改为${PERIODICITY[ex.periodicity] || ex.periodicity}${ex.monthDays?.length ? '（每月 ' + ex.monthDays.join('、') + ' 日）' : ''}${k ? `，重排了 ${k} 条还没入账的反响` : ''}`);
+            }
+        } else state.outlets.push({ ...blankOutlet(), ...Object.fromEntries(Object.entries(data).filter(([, v]) => v !== '' && v != null)), periodicity: o.periodicity || 'irregular', circle: o.circle || 'general', tier: o.tier || 3, real: o.real });
     }
     if (on('persons')) for (const p of b.persons) {
         let ex = findPerson(state, p.name);

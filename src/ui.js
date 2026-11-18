@@ -4,7 +4,7 @@ import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON } fr
 import { weekdayZh, normalizeISO, yearOf, cmp, addDays, diffDays, pickStoryDate } from './date.js';
 import {
     FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, knownToUser, knownSince, repLabel, setStatus, rerollWork, advanceTo, byId, columnSlots,
-    rerollPerson, READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, REL_BASIS, isMutual, relationsBetween, edgeFlows, findPaths, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, backfillBegin, backfillStep, backfillEnd, simulate, impressionAt, IMPRESSION_LABEL, seriesKey, READ_DONE } from './engine.js';
+    rerollPerson, rerollOutlet, approxIssue, READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, REL_BASIS, isMutual, relationsBetween, edgeFlows, findPaths, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, backfillBegin, backfillStep, backfillEnd, simulate, impressionAt, IMPRESSION_LABEL, seriesKey, READ_DONE } from './engine.js';
 import { buildEvidenceCard, cardText, generateOpinion, OPINION_DIMS, STYLE_CHECKLIST, RESPECT, FOLLOW, draftPersonProfile, draftWorkClaims } from './analysis.js';
 import {
     epistolaryAvailable, epistolaryStoryDate, sendToEpistolary, epistolaryWritable, scanLetters, peopleProposals, loadBackup, clearBackup, backupInfo, archiveSource,
@@ -17,6 +17,7 @@ import {
     guessPlace, eraKey, defaultWikiTitles, gatherSources, buildEraProfile, profileToProposals, wikiSearch, wikiExtract, trimFuture, eraDue, periodLabel } from './era.js';
 import { extractFromText, loadWorldbookText } from './extract.js';
 import { callLLM, listModels } from './llm.js';
+import { suggestRelations, acceptRelSuggestion, CERTAINTY, checkOutlets, acceptOutletCheck, fmtOutletVal, OUT_FIELDS } from './relsuggest.js';
 import { Fab } from './fab.js';
 import { FACT_TOPICS, FACT_VIA, PERC_KIND, PERC_TOPICS, factsKnownBy, perceptionsOf, blankFact } from './perception.js';
 import { perceptionMatrix, latestImage, publicPieces, activeCircles, generatePublicImage, reviewPerceptions, manualPerception, blankSelf, blankAssumed, SELF_MODE, SPREAD, REVIEW_TYPE } from './image.js';
@@ -815,13 +816,13 @@ function evCard(st, e, actions = '', { compact = false } = {}) {
     const agg = e.layer === 'reader_letters' || e.layer === 'mentions';
     const pol = agg ? `<span class="pe-chip">${e.layer === 'reader_letters' ? `约 ${e.count} 封` : `约 ${e.count} 条`}</span>` : `<span class="pe-chip pe-pol pe-pol${e.polarity}">${POLS[e.polarity]}</span>`;
     const major = isMajor(st, e);
-    const who = [outlet ? `《${h(outlet.name)}》` : '', person ? personTag(person) : h(e.personName || '')].filter(Boolean).join(' ');
+    const who = e.unsigned ? `${outlet ? `《${h(outlet.name)}》` : ''}<span class="pe-muted">（未署名，执笔：</span>${person ? personTag(person) : h(e.personName || '?')}<span class="pe-muted">）</span>` : [outlet ? `《${h(outlet.name)}》` : '', person ? personTag(person) : h(e.personName || '')].filter(Boolean).join(' ');
     const whoText = who || (e.layer === 'mentions' ? '各报' : e.layer === 'reader_letters' ? '读者' : '');
     const sum = e.text?.summary || '';
     return `<div class="pe-card pe-ev ${major ? 'pe-card-major' : ''} pe-edge${agg ? 'n' : e.polarity}">
       <div class="pe-card-main">
         <div class="pe-card-top">
-          <span class="pe-card-date">${h(e.date)}</span><span class="pe-muted">${e.datePrecision ? { xun: '（只知道旬）', month: '（只知道月份）', noLaterThan: '（不晚于）' }[e.datePrecision] || '' : weekdayZh(e.date)}</span>
+          <span class="pe-card-date">${h(e.date)}</span>${approxIssue(st, e) ? `<span class="pe-chip" title="月刊/半月刊没填出刊日：日期按每月 1 日（半月刊 1、15 日）约略推算。在刊物资料里填“出刊日”就准了">约 ${h(approxIssue(st, e))}</span>` : ''}<span class="pe-muted">${e.datePrecision ? { xun: '（只知道旬）', month: '（只知道月份）', noLaterThan: '（不晚于）' }[e.datePrecision] || '' : weekdayZh(e.date)}</span>
           <span class="pe-chip pe-chip-layer">${h(LAYERS[e.layer]?.label || e.layer)}</span>${pol}
           ${major && e.status === 'candidate' ? '<span class="pe-chip pe-chip-major">需确认</span>' : ''}
           ${e.origin === 'manual' ? '<span class="pe-chip">手动</span>' : ''}${e.auto ? '<span class="pe-chip">自动入账</span>' : ''}${e.reactsTo ? '<span class="pe-chip">回应前文</span>' : ''}${e.epiLetterId ? '<span class="pe-chip">来自书信簿</span>' : ''}${e.backfill ? '<span class="pe-chip" title="回溯推演补出来的，原记录里没有">回溯</span>' : ''}${e.epiSent ? `<span class="pe-chip pe-chip-layer" title="已寄进书信簿">✉ ${h(e.epiSent.code || e.epiSent.id)}</span>` : ''}${e.status === 'approved' && !knownToUser(st, e, getSettings()) && (!st.currentDate || e.date <= st.currentDate) ? (LAYERS[e.layer]?.public ? (ks => `<span class="pe-chip pe-chip-no" title="已经见报，但主角还没读到：不会注入主对话，NPC 也不会当作主角知道。可以在“设置 · 主角知道什么”里改规则，或点“主角已读到”">主角还没读到${ks ? '（约 ' + h(ks) + ' 经剪报得知）' : ''}</span>`)(knownSince(st, e, getSettings())) : `<span class="pe-chip pe-chip-no" title="别人之间的私信：主角不知道内容，也不会注入主对话">主角不知道${e.to && e.to !== 'protagonist' ? '（寄给 ' + h(e.to) + '）' : ''}</span>`) : ''}
@@ -1210,7 +1211,7 @@ function conceptsBlock(st) {
 }
 
 function people(st) {
-    return factsBlock(st) + `<div class="pe-toolbar"><button class="pe-primary" data-act="nw-open" title="谁和谁相熟、谁把作品推荐给了谁、身份可能从谁那里泄露">人物关系网</button><button class="pe-primary" data-act="pc-open" title="主角怎么看自己、以为别人怎么看他；别人实际怎么看；各读者圈子公开怎么说——哪里对不上">认知对照</button></div>` + suggestBlock(st) + loreBlock(st) + conceptsBlock(st) + listBlock('刊物', 'outlet', st.outlets, OUTLET_SPEC, st, o => `<b>${h(o.name)}</b> <small>${h(PERIODICITY[o.periodicity] || '')}${o.periodicity === 'weekly' && Number.isInteger(o.weekday) ? '·' + WEEKDAYS[o.weekday] : ''} · ${h(CIRCLES[o.circle] || '')} · ${h(tagsToText(o.politics))}</small>`)
+    return factsBlock(st) + `<div class="pe-toolbar"><button class="pe-primary" data-act="nw-open" title="谁和谁相熟、谁把作品推荐给了谁、身份可能从谁那里泄露">人物关系网</button><button class="pe-primary" data-act="pc-open" title="主角怎么看自己、以为别人怎么看他；别人实际怎么看；各读者圈子公开怎么说——哪里对不上">认知对照</button></div>` + suggestBlock(st) + relSuggestBlock(st) + loreBlock(st) + conceptsBlock(st) + outletCheckBlock(st) + listBlock('刊物', 'outlet', st.outlets, OUTLET_SPEC, st, o => `<b>${h(o.name)}</b> <small>${h(PERIODICITY[o.periodicity] || '')}${o.periodicity === 'weekly' && Number.isInteger(o.weekday) ? '·' + WEEKDAYS[o.weekday] : ''} · ${h(CIRCLES[o.circle] || '')} · ${h(tagsToText(o.politics))}</small>`)
         + listBlock('人物', 'person', [...st.persons].sort((a, b) => closeOf(b) - closeOf(a)), PERSON_SPEC, st, p => `${personTag(p)} <span class="pe-chip pe-close-chip" style="--c:${CLOSE_COLOR[closeOf(p)]}">${CLOSE[closeOf(p)]}</span> <small>${(p.roles || []).map(r => ROLES[r]).join('/')} · ${(p.outletIds || []).map(id => byId(st.outlets, id)?.name).filter(Boolean).join('、') || '无供稿刊物'} ${(p.relations || []).length ? ` · 熟人 ${(p.relations || []).length}` : ''}${(p.stances || []).length ? ` · 立场 ${p.stances.length}` : ''}${(p.stylePrefs || []).length ? ` · 文体偏好 ${p.stylePrefs.length}` : ''}${p.knowsIdentity ? ' · 知道笔名身份' : ''}${p.real ? ' · 真实人物' : ''}${p.active === false ? ' · 不参与推演' : ''}</small>`, p => CLOSE_COLOR[closeOf(p)], `<div class="pe-muted">颜色表示与主角的私交，按私交从深到浅排列：</div>${closeLegend()}`, p => `<button class="pe-primary" data-act="sim-person" data-id="${p.id}" title="此人和作者作品的关系；假如他读到某部作品会怎样">推演</button>`);
 }
 
@@ -1627,11 +1628,19 @@ function setControl(f, val) {
     // 不用 type=password：浏览器会把保存的登录密码自动填进来（还会把用户名填进上一个输入框）
     case 'password': return `<div class="pe-secret-wrap"><input class="text_pole pe-secret" type="text" data-k="${f.key}" value="${h(val ?? '')}" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore spellcheck="false" placeholder="粘贴密钥"><button class="pe-mini" data-act="secret-toggle" title="显示/隐藏">显示</button></div>`;
     default:
-        if (f.key === 'apiModel') return `<div class="pe-model-wrap"><input class="text_pole" type="text" data-k="apiModel" value="${h(val ?? '')}" placeholder="如 deepseek-chat" autocomplete="off" spellcheck="false">${modelList.length ? `<select class="text_pole" id="pe-model-pick"><option value="">从列表选（${modelList.length}）</option>${modelList.map(m => `<option value="${h(m)}" ${m === val ? 'selected' : ''}>${h(m)}</option>`).join('')}</select>` : ''}<button data-act="api-models" title="向这个地址读取可用的模型（GET /models）">获取模型列表</button></div>`;
+        if (f.key === 'apiModel') {
+            // 读到模型列表后只留一个下拉框；想填列表里没有的，选“手动输入…”
+            if (modelList.length && !modelManual) {
+                const opts = val && !modelList.includes(val) ? [val, ...modelList] : modelList;
+                return `<div class="pe-model-wrap"><select class="text_pole" data-k="apiModel">${val ? '' : '<option value="">（选择模型）</option>'}${opts.map(m => `<option value="${h(m)}" ${m === val ? 'selected' : ''}>${h(m)}</option>`).join('')}<option value="__manual">手动输入…</option></select><button data-act="api-models" title="重新读取可用的模型">刷新列表</button></div>`;
+            }
+            return `<div class="pe-model-wrap"><input class="text_pole" type="text" data-k="apiModel" value="${h(val ?? '')}" placeholder="如 deepseek-flash" autocomplete="off" spellcheck="false"><button data-act="api-models" title="向这个地址读取可用的模型（GET /models），之后直接从下拉框选">获取模型列表</button></div>`;
+        }
         return `<input class="text_pole" type="text" data-k="${f.key}" value="${h(val ?? '')}" placeholder="${h(f.placeholder || '')}" autocomplete="off">`;
     }
 }
 let modelList = [];
+let modelManual = false;
 
 function settings(st, s) {
     const spec = Object.fromEntries(SETTINGS_SPEC.map(f => [f.key, f]));
@@ -1694,7 +1703,7 @@ function onChange(e) {
         else simView[k] = t.checked;
         refresh(); return;
     }
-    if (t.id === 'pe-model-pick' && t.value) { const inp = document.querySelector('#pe-settings [data-k="apiModel"]'); if (inp) { inp.value = t.value; saveSettingsLive(); } return; }
+    if (t.dataset?.k === 'apiModel' && t.tagName === 'SELECT' && t.value === '__manual') { modelManual = true; refresh(); document.querySelector('#pe-settings input[data-k="apiModel"]')?.focus(); return; }
     if (t.dataset?.nw && simView?.kind === 'network') { simView.show[t.dataset.nw] = t.checked; refresh(); return; }
     if (t.dataset?.nwv && simView?.kind === 'network') {
         const k = t.dataset.nwv;
@@ -1828,6 +1837,7 @@ async function onClick(e) {
             const rep = applyBundle(st, b, { kinds, dateMode, settings: s, era: getEra(), sync: !!$('#pe-bundle-sync')?.checked });
             st.pendingBundle = null;
             syncEraYear(st);
+            if (rep.rerolled && st.currentDate) advanceTo(st, st.currentDate, s, getEra());
             if (txtPlan.length) {
                 // 整理包可能刚建好作品：重新匹配一次，免得重复新建
                 txtPlan = txtPlan.map(r => (r.action === 'new' || (r.action === 'skip' && r.isDraft) ? { ...r, ...pickUpdate(st, r) } : r));
@@ -1836,7 +1846,7 @@ async function onClick(e) {
             logLine(st, `应用整理包：${kinds.map(k => KIND_LABEL[k]).join('、')}；自动新建 ${rep.created.length}，跳过 ${rep.skipped.length}`);
             if (!st.backfilledAt) toast('info', '整理结果已导入。建议先到“人物与刊物”归类标签，再到“概览”点“回溯推演”，补上从首次发表到现在的文学界变化。');
             commit(`已应用整理结果${rep.created.length ? `；自动新建 ${rep.created.length} 项资料空白的条目，请到“人物与刊物”补全` : ''}${rep.skipped.length ? `；跳过 ${rep.skipped.length} 条` : ''}`);
-            if (rep.skipped.length || rep.created.length || rep.removed.length) showText('应用报告', [...rep.lines, '', '自动新建：', ...rep.created, '', '跳过：', ...rep.skipped, '', '按新版删除：', ...rep.removed].join('\n'));
+            if (rep.skipped.length || rep.created.length || rep.removed.length || rep.outletFix) showText('应用报告', [...rep.lines, '', '自动新建：', ...rep.created, '', '跳过：', ...rep.skipped, '', '按新版删除：', ...rep.removed].join('\n'));
             break;
         }
 
@@ -2000,6 +2010,8 @@ async function onClick(e) {
         }
         case 'bitem-edit': case 'bitem-del': case 'bitem-save': case 'bitem-cancel': case 'bundle-edit-all': case 'bundle-save-json': bundleItemAction(act, st, btn); break;
         case 'sg-accept': case 'sg-reject': case 'sg-suggest': await suggestAction(act, st, s, btn); break;
+        case 'oc-run': case 'oc-accept': case 'oc-reject': await outletCheckAction(act, st, s, btn); break;
+        case 'rs-run': case 'rs-accept': case 'rs-guess': case 'rs-reject': case 'rs-accept-doc': await relSuggestAction(act, st, s, btn); break;
         case 'lore-sync': {
             setBusy('同步世界书');
             let r;
@@ -2303,11 +2315,20 @@ async function onClick(e) {
             if (!String(vals[nameKey] || '').trim()) return toast('warning', '名称不能为空');
             let obj = st[listName].find(x => x.id === editing.id);
             if (!obj) { obj = editing.draft; st[listName].push(obj); }
+            const schedKey = o => JSON.stringify([o.periodicity, o.weekday ?? null, o.monthDays || [], o.issueDates || [], o.deadlineDays ?? null, o.capacity ?? null]);
+            const schedBefore = kind === 'outlet' ? schedKey(obj) : null;
             Object.assign(obj, vals);
             if (kind === 'person') { obj.relations = readRelations(root); obj.stances = readTable(root, 'stances') || obj.stances || []; obj.stylePrefs = readTable(root, 'stylePrefs') || obj.stylePrefs || []; }
             if (kind === 'work') obj.claims = readTable(root, 'claims') || obj.claims || [];
             if (kind === 'outlet' && obj.weekday === '') obj.weekday = null;
             editing = null;
+            if (kind === 'outlet' && schedBefore !== schedKey(obj) && (st.ledger || []).some(e => e.outletId === obj.id && e.origin === 'engine' && e.status !== 'approved')) {
+                if (confirm(`《${obj.name}》的出刊周期/出刊日改了。要按新周期重排这家刊物上还没入账的推演反响吗？（已入账的不动）`)) {
+                    const n = rerollOutlet(st, obj.id);
+                    if (st.currentDate) advanceTo(st, st.currentDate, s, getEra());
+                    commit(`已保存，并重排了 ${n} 条还没入账的反响`); break;
+                }
+            }
             commit('已保存');
             break;
         }
@@ -2452,10 +2473,10 @@ async function onClick(e) {
         case 'api-models': {
             saveSettingsLive();
             setBusy('读取模型列表');
-            try { modelList = await listModels(getSettings()); } finally { setBusy(''); }
+            try { modelList = await listModels(getSettings()); modelManual = false; } finally { setBusy(''); }
             clog('info', `读到 ${modelList.length} 个模型`, modelList.join('\n'));
             refresh();
-            toast(modelList.length ? 'success' : 'warning', modelList.length ? `读到 ${modelList.length} 个模型，在旁边的下拉框里选` : '这个接口没有返回模型列表，只能手动填写');
+            toast(modelList.length ? 'success' : 'warning', modelList.length ? `读到 ${modelList.length} 个模型，直接在下拉框里选` : '这个接口没有返回模型列表，只能手动填写');
             break;
         }
         case 'secret-toggle': {
@@ -2979,14 +3000,81 @@ export async function runSimNow(st, s, { auto = false, reason = '', until = null
 
 
 // ———————————— 推荐的新人物：待确认 ————————————
+function outletCheckBlock(st) {
+    const list = (st.outletChecks || []).filter(x => x.status === 'pending');
+    const card = x => { const o = byId(st.outlets, x.outletId); return `<div class="pe-card pe-sg pe-sg-${{ documented: 'high', likely: 'medium' }[x.certainty] || 'low'}"><div class="pe-card-main">
+        <div><b>《${h(o?.name || '?')}》</b> <span class="pe-chip pe-sg-conf">${h(CERTAINTY[x.certainty])}</span></div>
+        ${Object.entries(x.changes).map(([k, v]) => `<div>${h(OUT_FIELDS[k])}：<span class="pe-muted"><s>${h(fmtOutletVal(k, x.before[k]))}</s></span> → <b>${h(fmtOutletVal(k, v))}</b></div>`).join('')}
+        ${x.why ? `<div class="pe-muted">依据：${h(x.why)}</div>` : ''}
+      </div><div class="pe-card-actions"><button class="pe-primary" data-act="oc-accept" data-id="${x.id}" title="改刊物资料，并按新周期重排这家刊物上还没入账的推演反响">采纳并重排</button><button data-act="oc-reject" data-id="${x.id}">不要</button></div></div>`; };
+    return `<details class="pe-fold" ${list.length ? 'open' : ''}><summary>AI 核对刊物资料 <span class="pe-muted">${list.length ? `${list.length} 家待确认` : '出刊周期、出刊日、圈子、倾向'}</span></summary>
+      <div class="pe-muted">刊物周期填错了（比如把月刊当成周刊），排出来的见报日期、截稿、每期篇数都会跟着错。让 AI 按当时的实际情况核对一遍（调用 1 次），只列有出入的。<b>模型不联网</b>，依据是它的记忆，采纳前请核对。月刊、半月刊不知道具体出刊日就别填，插件会把日期标成“约 某月号”。</div>
+      ${list.map(card).join('')}
+      <div class="pe-actions"><div class="pe-actions-extra"></div><button class="pe-primary" data-act="oc-run" title="调用 1 次 AI">✦ AI 核对刊物资料</button></div></details>`;
+}
+async function outletCheckAction(act, st, s, btn) {
+    if (act === 'oc-run') {
+        taskBegin('AI 核对刊物资料');
+        let r;
+        try { r = await checkOutlets(st, { to: st.currentDate || '', era: getEra(), settings: s }); } finally { taskEnd(); }
+        commit(r.length ? `${r.length} 家刊物资料有出入，待你确认` : '没发现出入');
+        return;
+    }
+    const x = (st.outletChecks || []).find(y => y.id === btn.dataset.id);
+    if (!x) return;
+    if (act === 'oc-reject') { x.status = 'rejected'; commit(); return; }
+    pushUndo(st, '采纳刊物资料核对');
+    const o = acceptOutletCheck(st, x);
+    const n = rerollOutlet(st, x.outletId);
+    if (st.currentDate) advanceTo(st, st.currentDate, s, getEra());
+    commit(`已改《${o?.name}》的资料${n ? `，按新周期重排了 ${n} 条还没入账的反响` : ''}（已入账的不动）`);
+}
+function relSuggestBlock(st) {
+    const list = (st.relSuggestions || []).filter(x => x.status === 'pending');
+    const nm = id => byId(st.persons, id)?.name || '?';
+    const card = x => `<div class="pe-card pe-sg pe-sg-${{ documented: 'high', likely: 'medium' }[x.certainty] || 'low'}"><div class="pe-card-main">
+        <div><b>${h(nm(x.fromId))}</b> ${x.rel.mutual ? '⇄' : '→'} <b>${h(nm(x.toId))}</b>：${h(REL_TYPES[x.rel.type] || x.rel.type)}，${h(CLOSE[x.rel.closeness ?? 1])}，${h(REL_FREQ[x.rel.frequency] || '')}${x.rel.since ? '，自 ' + h(x.rel.since) : ''}${x.rel.until ? ' 至 ' + h(x.rel.until) : ''} <span class="pe-chip pe-sg-conf">${h(CERTAINTY[x.certainty])}</span>${x.rel.mutual ? ' <span class="pe-chip">双方都算</span>' : ''}</div>
+        <div class="pe-muted">${h(x.rel.evidence.replace(/^AI 提供，未联网核实：/, ''))}</div>
+      </div><div class="pe-card-actions"><button class="pe-primary" data-act="rs-accept" data-id="${x.id}" title="按“${h(REL_BASIS[x.rel.basis])}”写进${h(nm(x.fromId))}的关系">采纳</button>${x.rel.basis === 'history' ? `<button data-act="rs-guess" data-id="${x.id}" title="写进关系，但依据标为“推测”（图上画虚线）">当推测采纳</button>` : ''}<button data-act="rs-reject" data-id="${x.id}" title="不要，以后也不再提">不要</button></div></div>`;
+    return `<details class="pe-fold" ${list.length ? 'open' : ''}><summary>AI 查到的人物关系 <span class="pe-muted">${list.length ? `${list.length} 条待确认` : '暂无待确认'}</span></summary>
+      <div class="pe-muted">让 AI 按它记得的史料，找出人物表里这些人彼此之间截至今天的真实关系（谁和谁是朋友、通信、决斗后和解、在哪次聚会见过），顺带推荐不在表里、但能把消息从一个圈子带到另一个圈子的人。<b>模型不联网</b>，“有明确史料”也只是它的记忆，可能记错日期或张冠李戴：采纳前请核对，拿不准的用“当推测采纳”。虚构人物之间不查。</div>
+      ${list.map(card).join('')}
+      <div class="pe-actions"><div class="pe-actions-extra"><label class="pe-check-inline"><input type="checkbox" id="pe-rs-middle" checked> 顺带推荐中转人物</label>${list.length ? `<button data-act="rs-accept-doc" title="把“有明确史料”的全部采纳">采纳全部“有明确史料”的</button>` : ''}</div><button class="pe-primary" data-act="rs-run" title="调用 1 次 AI">✦ AI 查人物关系</button></div></details>`;
+}
+async function relSuggestAction(act, st, s, btn) {
+    if (act === 'rs-run') {
+        if (!st.currentDate) return toast('warning', '先设定故事日期');
+        const focusIds = btn.dataset.focus ? [btn.dataset.focus] : null;
+        const withMiddle = document.getElementById('pe-rs-middle')?.checked ?? !focusIds;
+        taskBegin('AI 查人物关系');
+        let r;
+        try { r = await suggestRelations(st, { to: st.currentDate, era: getEra(), settings: s, focusIds, withMiddle }); } finally { taskEnd(); }
+        commit(`查到 ${r.out.length} 条关系待确认${r.mids.length ? `，推荐中转人物 ${r.mids.length} 位（在“AI 推荐的新人物”里）` : ''}${r.skipped.length ? `；跳过 ${r.skipped.length} 条（详见控制台）` : ''}`);
+        return;
+    }
+    if (act === 'rs-accept-doc') {
+        const list = (st.relSuggestions || []).filter(x => x.status === 'pending' && x.certainty === 'documented');
+        if (!list.length) return toast('info', '没有“有明确史料”的待确认关系');
+        pushUndo(st, '采纳 AI 查到的关系');
+        for (const x of list) acceptRelSuggestion(st, x);
+        commit(`采纳了 ${list.length} 条`);
+        return;
+    }
+    const x = (st.relSuggestions || []).find(y => y.id === btn.dataset.id);
+    if (!x) return;
+    if (act === 'rs-reject') { x.status = 'rejected'; commit('不要这条，以后不再提'); return; }
+    pushUndo(st, '采纳 AI 查到的关系');
+    acceptRelSuggestion(st, x, { asGuess: act === 'rs-guess' });
+    commit(`已写进 ${byId(st.persons, x.fromId)?.name} 的关系${act === 'rs-guess' ? '（标为推测）' : ''}`);
+}
 function suggestBlock(st) {
     const list = (st.personSuggestions || []).filter(x => x.status === 'pending');
     const CONF = { high: '把握大', medium: '把握一般', low: '把握小，请核实' };
     const card = x => `<div class="pe-card pe-sg pe-sg-${x.confidence}"><div class="pe-card-main">
         <div><b>${h(x.name)}</b> ${x.originalName ? `<span class="pe-muted">${h(x.originalName)}</span>` : ''} ${x.lifespan ? `<span class="pe-muted">${h(x.lifespan)}</span>` : ''} <span class="pe-chip pe-sg-conf">${CONF[x.confidence]}</span></div>
         <div class="pe-muted">${(x.roles || []).map(r => ROLES[r] || r).join('/')}${x.outlets.length ? ' · 供稿：' + h(x.outlets.join('、')) : ''}${x.reads.length ? ' · 常读：' + h(x.reads.join('、')) : ''}</div>
-        <div><b>为什么：</b>${h(x.why)}</div>
-        ${x.how ? `<div><b>怎样读到：</b>${h(x.how)}</div>` : ''}
+        ${x.kind === 'intermediary' ? '<div><span class="pe-chip">关系中转人物</span></div>' : ''}<div><b>为什么：</b>${h(x.why)}</div>
+        ${x.how ? `<div><b>${x.kind === 'intermediary' ? '往来' : '怎样读到'}：</b>${h(x.kind === 'intermediary' ? x.how.replace(/^关系中转：/, '') : x.how)}</div>` : ''}
         ${x.whichWorks.length ? `<div><b>可能读的作品：</b>${x.whichWorks.map(t => bt(t)).join('、')}</div>` : ''}
         ${x.stances.length ? `<div class="pe-ideas">${x.stances.map(t => `<span class="pe-idea ${t.side === 'pro' ? 'pe-idea-ok' : t.side === 'con' ? 'pe-idea-no' : 'pe-idea-mid'}">${h(t.issue)}：${({ pro: '支持', con: '反对', mixed: '有保留' })[t.side] || ''}${t.note ? '——' + h(t.note) : ''}</span>`).join('')}</div>` : ''}
         ${x.interests.length || x.likes.length || x.dislikes.length ? `<div class="pe-muted">关注：${h(x.interests.join('、') || '—')}；欣赏：${h(x.likes.join('、') || '—')}；反感：${h(x.dislikes.join('、') || '—')}</div>` : ''}
@@ -3143,7 +3231,7 @@ function nwDetail(st, v, asOf) {
       <h5>一度关系 <span class="pe-muted">${one.size}</span></h5>${[...one.entries()].map(([qid, rels]) => `<div class="pe-op-line"><button class="pe-linkbtn" data-act="nw-pick" data-id="${qid}">${h(nm(qid))}</button>　${rels.map(r => `${r.from === p.id ? '→' : '←'} ${h(REL_TYPES[r.type] || r.type)}${r.basis === 'guess' ? '（推测）' : ''}`).join('；')}</div>`).join('') || '<div class="pe-muted">没有手填的关系</div>'}
       <h5>二度关系 <span class="pe-muted">${two.size}，经由谁</span></h5>${[...two.entries()].map(([qid, via]) => `<div class="pe-op-line"><button class="pe-linkbtn" data-act="nw-pick" data-id="${qid}">${h(nm(qid))}</button>　<span class="pe-muted">经 ${via.map(x => h(nm(x))).join('、')}</span></div>`).join('') || '<div class="pe-muted">无</div>'}
       <h5>他怎么接触到主角的作品</h5>${reads.length ? reads.map(r => `<div class="pe-op-line">《${h(byId(st.works, r.workId)?.title || '?')}》 ${h(r.readDate || '')} · ${h(CHANNELS[r.channel] || r.channel || '')}${r.channel === 'recommend' && st.recommends?.[r.workId]?.[r.personId] ? ' · ' + h(nm(st.recommends[r.workId][r.personId].by)) + ' 谈起' : ''}</div>`).join('') : '<div class="pe-muted">截至此日没有读过</div>'}
-      <div class="pe-row"><span class="pe-spacer"></span><button data-act="nw-path-from" data-id="${p.id}">从他查信息路径</button><button data-act="edit-item" data-kind="person" data-id="${p.id}">编辑关系</button></div></div>`;
+      <div class="pe-row"><span class="pe-spacer"></span><button data-act="rs-run" data-focus="${p.id}" title="让 AI 按史料找他和表里其他人的关系（调用 1 次），结果在“人物与刊物”页待确认">✦ AI 查他的关系</button><button data-act="nw-path-from" data-id="${p.id}">从他查信息路径</button><button data-act="edit-item" data-kind="person" data-id="${p.id}">编辑关系</button></div></div>`;
 }
 function nwPaths(st, v, asOf) {
     const nm = id => byId(st.persons, id)?.name || '?';
