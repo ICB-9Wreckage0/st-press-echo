@@ -47,7 +47,16 @@ export const LAYERS = {
     mentions: { label: '转载/提及（剪报）', public: true, needsOutlet: false, repWeight: 0.05 },
 };
 
-export const REL_TYPES = { friend: '朋友', colleague: '同事', family: '家人/伴侣', mentor: '师友/前辈', editor: '编辑与作者', salon: '沙龙/聚会常客', correspondent: '通信往来', rival: '对手/论敌' };
+export const REL_TYPES = { friend: '朋友', colleague: '同事', family: '家人/伴侣', mentor: '师友/前辈', editor: '编辑与作者', salon: '沙龙/聚会常客', correspondent: '通信往来', rival: '对手/论敌', met: '见过面（共同会面）' };
+/** 关系的依据：史料可考 / 剧情里发生过 / 推测（推测的在图上画虚线） */
+export const REL_BASIS = { history: '史料可考', story: '剧情里发生过', guess: '推测' };
+/** 关系图的三类：私人往来 / 文学与工作 / 社交场合 */
+export const REL_CAT = { private: '私人关系', literary: '文学与工作', social: '社交场合' };
+export const relCat = type => (['friend', 'family', 'correspondent', 'mentor'].includes(type) ? 'private' : ['editor', 'colleague', 'rival'].includes(type) ? 'literary' : 'social');
+/** 双向关系：家人默认双向；其余要勾“双方都算” */
+export const isMutual = r => r.mutual ?? r.type === 'family';
+/** 关系在某天是否有效 */
+export const relOn = (r, date) => !date || ((!r.since || cmp(r.since, date) <= 0) && (!r.until || cmp(date, r.until) <= 0));
 export const REL_FREQ = { daily: '几乎天天见', weekly: '每周', monthly: '每月', rare: '偶尔' };
 
 export const ROLES = { critic: '评论家', journalist: '记者/专栏作者', editor: '编辑', writer: '作家', scholar: '学者/专业人士' };
@@ -719,12 +728,83 @@ function addImpression(state, pennameId, personId, entry) {
 /** 此人对外的关系：手填的关系，加上同一刊物的同事（没手填时按“每周见、一般熟”算） */
 export function relationsOf(state, person) {
     const out = (person.relations || []).filter(r => r.to && r.to !== person.id).map(r => ({ ...r }));
+    // 别人写的双向关系（家人、勾了“双方都算”的），反过来也算此人的关系
+    for (const q of state.persons || []) {
+        if (q.id === person.id || out.some(r => r.to === q.id)) continue;
+        const r = (q.relations || []).find(x => x.to === person.id && isMutual(x));
+        if (r) out.push({ ...r, to: q.id, reverse: true, discloseIdentity: false }); // 信任不对称：反过来不默认会说出身份与私事
+    }
     for (const q of state.persons || []) {
         if (q.id === person.id || out.some(r => r.to === q.id)) continue;
         if ((q.outletIds || []).some(id => (person.outletIds || []).includes(id))) out.push({ to: q.id, type: 'colleague', closeness: 1, frequency: 'weekly', trust: 0.5, implicit: true });
     }
     return out;
 }
+/**
+ * 两人之间的信息流（截至某天）：谈起作品（推荐）、可能泄露身份、可能说出私事。
+ * “有关系”不等于“传过话”——这里只列推演或你确认过的实际传递。
+ */
+export function edgeFlows(state, a, b, asOf = null) {
+    const out = [];
+    const ok = d => !asOf || !d || cmp(d, asOf) <= 0;
+    const nm = id => byId(state.persons, id)?.name || '?';
+    for (const [wid, box] of Object.entries(state.recommends || {})) for (const [pid, x] of Object.entries(box || {})) {
+        if (!ok(x.date) || !((x.by === a && pid === b) || (x.by === b && pid === a))) continue;
+        out.push({ kind: 'talk', from: x.by, to: pid, date: x.date, workId: wid, text: `${x.date} ${nm(x.by)} 向 ${nm(pid)} 谈起《${byId(state.works, wid)?.title || '?'}》${x.polarity === 1 ? '（说好）' : x.polarity === -1 ? '（说不好）' : ''}` });
+    }
+    for (const l of state.identityLeaks || []) {
+        if (!ok(l.date) || !((l.from === a && l.to === b) || (l.from === b && l.to === a))) continue;
+        out.push({ kind: 'leak', from: l.from, to: l.to, date: l.date, status: l.status, text: `${l.date} ${nm(l.from)} 可能向 ${nm(l.to)} 透露了“${byId(state.pennames, l.pennameId)?.name || ''}”的身份（${{ pending: '待确认', confirmed: '确有其事', denied: '没有' }[l.status] || l.status}）` });
+    }
+    for (const l of state.factLeaks || []) {
+        if (!ok(l.date) || !((l.from === a && l.to === b) || (l.from === b && l.to === a))) continue;
+        const f = (state.privateFacts || []).find(x => x.id === l.factId);
+        out.push({ kind: 'fact', from: l.from, to: l.to, date: l.date, status: l.status, text: `${l.date} ${nm(l.from)} 可能向 ${nm(l.to)} 说起主角的私事“${(f?.text || '').slice(0, 24)}”（${{ pending: '待确认', confirmed: '确有其事', denied: '没有' }[l.status] || l.status}）` });
+    }
+    return out.sort((x, y) => cmp(x.date || '', y.date || ''));
+}
+
+/** 两人之间的关系（两个方向都看），截至某天有效的 */
+export function relationsBetween(state, a, b, asOf = null) {
+    const pa = byId(state.persons, a), pb = byId(state.persons, b);
+    const out = [];
+    for (const r of pa?.relations || []) if (r.to === b && relOn(r, asOf)) out.push({ ...r, from: a });
+    for (const r of pb?.relations || []) if (r.to === a && relOn(r, asOf)) out.push({ ...r, from: b });
+    return out;
+}
+
+/**
+ * 两人之间可能的信息路径（无向找，最多 maxHops 跳），每一跳标出关系、以及这条线上是否真的传过话。
+ * 不把共同朋友当成直接关系；没有路径也照实说。
+ */
+export function findPaths(state, from, to, { asOf = null, maxHops = 3, limit = 8, implicit = false } = {}) {
+    const adj = new Map();
+    const add = (x, y) => { if (!adj.has(x)) adj.set(x, new Set()); adj.get(x).add(y); };
+    for (const p of state.persons || []) {
+        if (p.active === false) continue;
+        for (const r of p.relations || []) if (r.to && r.to !== p.id && relOn(r, asOf) && byId(state.persons, r.to)?.active !== false) { add(p.id, r.to); add(r.to, p.id); }
+        if (implicit) for (const r of relationsOf(state, p)) if (r.implicit) { add(p.id, r.to); add(r.to, p.id); }
+    }
+    const paths = [];
+    const walk = (cur, path) => {
+        if (paths.length >= 200) return;
+        if (cur === to) { paths.push([...path]); return; }
+        if (path.length > maxHops) return;
+        for (const n of adj.get(cur) || []) if (!path.includes(n)) { path.push(n); walk(n, path); path.pop(); }
+    };
+    walk(from, [from]);
+    paths.sort((x, y) => x.length - y.length);
+    return paths.slice(0, limit).map(ids => ({
+        ids,
+        hops: ids.slice(1).map((id, i) => {
+            const a = ids[i], b = id;
+            const rels = relationsBetween(state, a, b, asOf);
+            const flows = edgeFlows(state, a, b, asOf).filter(f => f.from === a && f.to === b && f.status !== 'denied' && f.status !== 'pending');
+            return { a, b, rels, implicit: !rels.length, flows };
+        }),
+    })).map(p => ({ ...p, realized: p.hops.every(hp => hp.flows.length > 0) }));
+}
+
 /** 此人是否知道这个笔名背后是谁：以笔名的“知道身份的人”名单为准；名单空着时才看人物自己的“知道主角的笔名身份” */
 export function knowsPen(state, person, pennameId) {
     const pen = byId(state.pennames, pennameId);

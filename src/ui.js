@@ -4,7 +4,7 @@ import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON } fr
 import { weekdayZh, normalizeISO, yearOf, cmp, addDays, diffDays, pickStoryDate } from './date.js';
 import {
     FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, knownToUser, knownSince, repLabel, setStatus, rerollWork, advanceTo, byId, columnSlots,
-    rerollPerson, READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, backfillBegin, backfillStep, backfillEnd, simulate, impressionAt, IMPRESSION_LABEL, seriesKey, READ_DONE } from './engine.js';
+    rerollPerson, READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, REL_BASIS, isMutual, relationsBetween, edgeFlows, findPaths, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, backfillBegin, backfillStep, backfillEnd, simulate, impressionAt, IMPRESSION_LABEL, seriesKey, READ_DONE } from './engine.js';
 import { buildEvidenceCard, cardText, generateOpinion, OPINION_DIMS, STYLE_CHECKLIST, RESPECT, FOLLOW, draftPersonProfile, draftWorkClaims } from './analysis.js';
 import {
     epistolaryAvailable, epistolaryStoryDate, sendToEpistolary, epistolaryWritable, scanLetters, peopleProposals, loadBackup, clearBackup, backupInfo, archiveSource,
@@ -16,11 +16,11 @@ import { writeEvent, buildWriterPrompt, translatePaperFr } from './writer.js';
 import {
     guessPlace, eraKey, defaultWikiTitles, gatherSources, buildEraProfile, profileToProposals, wikiSearch, wikiExtract, trimFuture, eraDue, periodLabel } from './era.js';
 import { extractFromText, loadWorldbookText } from './extract.js';
-import { callLLM } from './llm.js';
+import { callLLM, listModels } from './llm.js';
 import { Fab } from './fab.js';
 import { FACT_TOPICS, FACT_VIA, PERC_KIND, PERC_TOPICS, factsKnownBy, perceptionsOf, blankFact } from './perception.js';
 import { perceptionMatrix, latestImage, publicPieces, activeCircles, generatePublicImage, reviewPerceptions, manualPerception, blankSelf, blankAssumed, SELF_MODE, SPREAD, REVIEW_TYPE } from './image.js';
-import { workTimeline, timelineSvg, networkData, layoutNetwork, networkSvg, paperHtml, paperDates, PAPER_CSS, outletOriginal, frDate, paperMissingFr, paperItems } from './views.js';
+import { workTimeline, timelineSvg, networkData, visibleNetwork, layoutNetwork, networkSvg, paperHtml, paperDates, PAPER_CSS, outletOriginal, frDate, paperMissingFr, paperItems } from './views.js';
 import { syncLore, lorePersons } from './lore.js';
 import { pushUndo, popUndo, lastUndo } from './undo.js';
 import { rebaseSnapshots } from './rollback.js';
@@ -1046,11 +1046,14 @@ function relRow(st, self, r = {}) {
       <label title="自己知道笔名背后是谁时，肯不肯告诉他"><input type="checkbox" data-r="discloseIdentity" ${r.discloseIdentity ? 'checked' : ''}> 可能说出作者身份与私事</label>
       <input type="text" data-r="since" class="text_pole" value="${h(r.since || '')}" placeholder="从（可空）" title="关系从哪天开始，例如搬来同住、初次结识" style="width:7.5em">
       <input type="text" data-r="until" class="text_pole" value="${h(r.until || '')}" placeholder="到（可空）" title="哪天起断了往来" style="width:7.5em">
+      <label title="双方都算这层关系（家人默认双方都算）。不勾就是单向：只有他把对方当熟人"><input type="checkbox" data-r="mutual" ${isMutual(r) ? 'checked' : ''}> 双方都算</label>
+      <select data-r="basis" class="text_pole" title="这层关系有什么依据；推测的在关系图上画虚线">${opt({ '': '依据？', ...REL_BASIS }, r.basis || '')}</select>
+      <input type="text" data-r="evidence" class="text_pole" value="${h(r.evidence || '')}" placeholder="依据（如：5-13 茶室同桌；1884 决斗、1888 和解）" style="flex:1 1 16em">
       <button class="menu_button pe-mini" data-act="rel-del" title="删除">✕</button></div>`;
 }
 function relationsEditor(obj, st) {
     const incoming = st.persons.filter(p => p.id !== obj.id && (p.relations || []).some(r => r.to === obj.id));
-    return `<div class="pe-field pe-wide"><label>熟人关系 <small class="pe-muted">有方向：这里写的是“${h(obj.name || '此人')}对别人”。见面越勤、越亲近，读到的东西越可能谈起；同一刊物的同事不填也会按“每周见、一般熟”算</small></label>
+    return `<div class="pe-field pe-wide"><label>熟人关系 <small class="pe-muted">有方向：这里写的是“${h(obj.name || '此人')}对别人”；勾“双方都算”就两边都生效。见面越勤、越亲近，读到的东西越可能谈起；同一刊物的同事不填也会按“每周见、一般熟”算</small></label>
       <div class="pe-rel-list" data-self="${obj.id}">${(obj.relations || []).map(r => relRow(st, obj, r)).join('')}</div>
       <div class="pe-row"><button class="menu_button" data-act="rel-add">＋ 添加关系</button>
       ${incoming.length ? `<small class="pe-muted">反过来，把${h(obj.name || '此人')}列为熟人的有：${incoming.map(p => personTag(p)).join('、')}</small>` : ''}</div></div>`;
@@ -1058,7 +1061,7 @@ function relationsEditor(obj, st) {
 function readRelations(root) {
     return [...root.querySelectorAll('.pe-rel-row')].map(row => {
         const g = k => row.querySelector(`[data-r="${k}"]`);
-        return { to: g('to').value, type: g('type').value, closeness: +g('closeness').value, frequency: g('frequency').value, trust: +g('trust').value, discloseOpinions: g('discloseOpinions').checked, discloseIdentity: g('discloseIdentity').checked, since: normalizeISO(g('since').value) || '', until: normalizeISO(g('until').value) || '' };
+        return { to: g('to').value, type: g('type').value, closeness: +g('closeness').value, frequency: g('frequency').value, trust: +g('trust').value, discloseOpinions: g('discloseOpinions').checked, discloseIdentity: g('discloseIdentity').checked, since: normalizeISO(g('since').value) || '', until: normalizeISO(g('until').value) || '', mutual: g('mutual').checked, basis: g('basis').value, evidence: g('evidence').value.trim() };
     }).filter(r => r.to);
 }
 
@@ -1621,10 +1624,14 @@ function setControl(f, val) {
     case 'checkbox': return `<label class="pe-switch"><input type="checkbox" data-k="${f.key}" ${val ? 'checked' : ''}><span></span></label>`;
     case 'select': return `<select class="text_pole" data-k="${f.key}">${Object.entries(opts).map(([k, v]) => `<option value="${h(k)}" ${String(val) === String(k) ? 'selected' : ''}>${h(v)}</option>`).join('')}</select>`;
     case 'number': return `<input class="text_pole pe-num-in" type="number" step="${f.step ?? 1}" data-k="${f.key}" data-num="1" value="${h(val ?? '')}">`;
-    case 'password': return `<input class="text_pole" type="password" data-k="${f.key}" value="${h(val ?? '')}" autocomplete="off">`;
-    default: return `<input class="text_pole" type="text" data-k="${f.key}" value="${h(val ?? '')}" placeholder="${h(f.placeholder || '')}">`;
+    // 不用 type=password：浏览器会把保存的登录密码自动填进来（还会把用户名填进上一个输入框）
+    case 'password': return `<div class="pe-secret-wrap"><input class="text_pole pe-secret" type="text" data-k="${f.key}" value="${h(val ?? '')}" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore spellcheck="false" placeholder="粘贴密钥"><button class="pe-mini" data-act="secret-toggle" title="显示/隐藏">显示</button></div>`;
+    default:
+        if (f.key === 'apiModel') return `<div class="pe-model-wrap"><input class="text_pole" type="text" data-k="apiModel" value="${h(val ?? '')}" placeholder="如 deepseek-chat" autocomplete="off" spellcheck="false">${modelList.length ? `<select class="text_pole" id="pe-model-pick"><option value="">从列表选（${modelList.length}）</option>${modelList.map(m => `<option value="${h(m)}" ${m === val ? 'selected' : ''}>${h(m)}</option>`).join('')}</select>` : ''}<button data-act="api-models" title="向这个地址读取可用的模型（GET /models）">获取模型列表</button></div>`;
+        return `<input class="text_pole" type="text" data-k="${f.key}" value="${h(val ?? '')}" placeholder="${h(f.placeholder || '')}" autocomplete="off">`;
     }
 }
+let modelList = [];
 
 function settings(st, s) {
     const spec = Object.fromEntries(SETTINGS_SPEC.map(f => [f.key, f]));
@@ -1687,7 +1694,15 @@ function onChange(e) {
         else simView[k] = t.checked;
         refresh(); return;
     }
+    if (t.id === 'pe-model-pick' && t.value) { const inp = document.querySelector('#pe-settings [data-k="apiModel"]'); if (inp) { inp.value = t.value; saveSettingsLive(); } return; }
     if (t.dataset?.nw && simView?.kind === 'network') { simView.show[t.dataset.nw] = t.checked; refresh(); return; }
+    if (t.dataset?.nwv && simView?.kind === 'network') {
+        const k = t.dataset.nwv;
+        if (k === 'asOf') { const d = normalizeISO(t.value); if (t.value && !d) return toast('warning', '日期写成 YYYY-MM-DD'); simView.asOf = d || ''; }
+        else if (k === 'pa' || k === 'pb') simView[k] = t.value;
+        else simView[k] = t.checked;
+        refresh(); return;
+    }
     if (t.id === 'pe-ledger-filter') { ledgerFilter = t.value; refresh(); }
     if (t.closest?.('#pe-settings')) { saveSettingsLive(); return; }
     if (t.id === 'pe-bf-by') { bfForm.by = t.value; bfForm.size = { floors: 100, chars: 30000, days: 14 }[t.value]; bfForm.mode = document.getElementById('pe-bf-mode')?.value || bfForm.mode; refresh(); return; }
@@ -1953,6 +1968,9 @@ async function onClick(e) {
             commit(`找到 ${rv.items.length} 处出入`);
             break;
         }
+        case 'nw-unsel': if (simView?.kind === 'network') { simView.sel = null; refresh(); } break;
+        case 'nw-pick': if (simView?.kind === 'network') { simView.sel = { kind: 'node', id: btn.dataset.id }; refresh(); } break;
+        case 'nw-path-from': if (simView?.kind === 'network') { simView.pa = btn.dataset.id; refresh(); } break;
         case 'nw-relayout': if (simView?.kind === 'network') { simView.pos = {}; refresh(); } break;
         case 'concepts-build':
         case 'concepts-rebuild': {
@@ -2424,10 +2442,25 @@ async function onClick(e) {
             break;
         }
         case 'api-test': {
+            saveSettingsLive();
             setBusy('测试中');
-            const r = await callLLM({ system: '只回复 OK', user: 'ping', settings: s, maxTokens: 20 });
-            setBusy('');
-            toast('success', '模型返回：' + truncate(r, 60));
+            let r;
+            try { r = await callLLM({ system: '只回复 OK', user: 'ping', settings: getSettings(), maxTokens: 400, label: '测试连接' }); } finally { setBusy(''); }
+            toast('success', '连接正常，模型返回：' + truncate(String(r).trim(), 60));
+            break;
+        }
+        case 'api-models': {
+            saveSettingsLive();
+            setBusy('读取模型列表');
+            try { modelList = await listModels(getSettings()); } finally { setBusy(''); }
+            clog('info', `读到 ${modelList.length} 个模型`, modelList.join('\n'));
+            refresh();
+            toast(modelList.length ? 'success' : 'warning', modelList.length ? `读到 ${modelList.length} 个模型，在旁边的下拉框里选` : '这个接口没有返回模型列表，只能手动填写');
+            break;
+        }
+        case 'secret-toggle': {
+            const inp = btn.parentElement.querySelector('.pe-secret');
+            const on = inp.classList.toggle('pe-shown'); btn.textContent = on ? '隐藏' : '显示';
             break;
         }
 
@@ -3049,17 +3082,76 @@ function timelinePage(st) {
 
 let nwCache = null;
 function networkPage(st) {
-    const data = networkData(st);
-    const P = layoutNetwork(data, simView.pos || {});
-    simView.pos = P;
+    const v = simView;
+    const asOf = v.asOf || st.currentDate || '';
+    const full = networkData(st, { asOf, implicit: !!v.implicit });
+    const data = visibleNetwork(full, v.show, !!v.hideIso);
+    const P = layoutNetwork(full, v.pos || {});
+    v.pos = P;
     nwCache = data;
-    const n = k => data.edges.filter(e => e.kind === k).length;
-    const box = (k, lab, cls) => `<label class="pe-check-inline pe-nw-key ${cls}"><input type="checkbox" data-nw="${k}" ${simView.show[k] !== false ? 'checked' : ''}><i></i>${lab} <span class="pe-muted">${n(k)}</span></label>`;
-    return `<div class="pe-toolbar"><button data-act="sim-close">← 返回</button><span class="pe-muted">拖动人物可以挪位置；鼠标停在人物上，只显示和他相连的线</span><span class="pe-spacer"></span><button data-act="nw-relayout">重新排布</button></div>
-      <h4>人物关系网 <span class="pe-muted">截至 ${h(st.currentDate || '今天')}</span></h4>
-      <div class="pe-tl-legend">${box('close', '与主角的私交', 'k-close')}${box('rel', '熟人关系', 'k-rel')}${box('talk', '谈起作品（箭头指向听的人）', 'k-talk')}${box('leak', '可能泄露身份', 'k-leak')}</div>
-      <div class="pe-tl-legend">${Object.entries({ 0: '陌生', 1: '认识', 2: '朋友', 3: '至交' }).map(([k, v]) => `<span><i class="dot" style="background:${CLOSE_COLOR[k]}"></i>${v}</span>`).join('')}<span><i class="dot ring"></i>知道笔名是主角</span><span class="pe-muted">圆越大，读过主角的作品越多</span></div>
-      <div class="pe-nw-wrap">${networkSvg(st, data, P, simView.show)}</div>`;
+    const n = k => full.edges.filter(e => e.kind === k).length;
+    const nc = c => full.edges.filter(e => e.kind === 'rel' && e.cat === c).length;
+    const box = (k, lab, cls, cnt) => `<label class="pe-check-inline pe-nw-key ${cls}"><input type="checkbox" data-nw="${k}" ${v.show[k] !== false ? 'checked' : ''}><i></i>${lab} <span class="pe-muted">${cnt}</span></label>`;
+    const persons = (st.persons || []).filter(p => p.active !== false);
+    const popt = sel => `<option value="">（选人物）</option>${persons.map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${h(p.name)}</option>`).join('')}`;
+    return `<div class="pe-toolbar"><button data-act="sim-close">← 返回</button>
+        <label class="pe-inline-field">截至 <input type="text" class="text_pole pe-pc-date" data-nwv="asOf" value="${h(asOf)}" placeholder="YYYY-MM-DD"></label>
+        <label class="pe-check-inline"><input type="checkbox" data-nwv="hideIso" ${v.hideIso ? 'checked' : ''}> 隐藏没有连线的人</label>
+        <label class="pe-check-inline" title="同一刊物的同事，没手填关系时推演也会按“每周见、一般熟”算"><input type="checkbox" data-nwv="implicit" ${v.implicit ? 'checked' : ''}> 显示同刊同事（自动）</label>
+        <span class="pe-spacer"></span><button data-act="nw-relayout">重新排布</button></div>
+      <h4>人物关系网 <span class="pe-muted">截至 ${h(asOf || '今天')}：只画那天有效的关系和已经发生的传递</span></h4>
+      <div class="pe-tl-legend">${box('cat_private', '私人关系', 'k-private', nc('private'))}${box('cat_literary', '文学与工作', 'k-literary', nc('literary'))}${box('cat_social', '社交场合', 'k-social', nc('social'))}${box('close', '与主角的私交', 'k-close', n('close'))}${box('talk', '谈起作品', 'k-talk', n('talk'))}${box('leak', '可能泄露身份/私事', 'k-leak', n('leak'))}</div>
+      <div class="pe-tl-legend">${Object.entries({ 0: '陌生', 1: '认识', 2: '朋友', 3: '至交' }).map(([k, l]) => `<span><i class="dot" style="background:${CLOSE_COLOR[k]}"></i>${l}</span>`).join('')}<span class="pe-muted">（人物颜色＝与主角的交情）</span><span><i class="dot ring"></i>知道笔名是主角</span><span class="pe-muted">圆越大，读过主角的作品越多</span></div>
+      <div class="pe-tl-legend pe-muted"><span><i class="ln"></i>实线：史料或剧情里有据</span><span><i class="ln dash"></i>虚线：推测</span><span><i class="ln dot2"></i>点线：同刊同事（自动）</span><span>→ 单向：只有一方写了这层关系（A 把 B 当熟人，不等于 B 也这样）；没箭头＝双方都算</span><span>读过作品≠认识作者：只有与主角有私交的人才连到主角</span></div>
+      <div class="pe-nw-wrap">${networkSvg(st, data, P, v.show)}</div>
+      <div class="pe-muted">点人物看他的一度、二度关系；点连线看两人之间的关系依据和实际传过的话。拖动可以挪位置。</div>
+      ${nwDetail(st, v, asOf)}
+      <div class="pe-card pe-nw-path"><b>两人之间的信息路径</b> <span class="pe-muted">最多三跳；有路径不等于传过话，每一跳都标出是否真的谈起过</span>
+        <div class="pe-row pe-pc-form"><select class="text_pole" data-nwv="pa">${popt(v.pa)}</select> → <select class="text_pole" data-nwv="pb">${popt(v.pb)}</select></div>
+        ${v.pa && v.pb && v.pa !== v.pb ? nwPaths(st, v, asOf) : ''}</div>`;
+}
+function nwRelText(st, r) {
+    const nm = id => byId(st.persons, id)?.name || '?';
+    return `${h(nm(r.from))} → ${h(nm(r.to))}：${h(REL_TYPES[r.type] || r.type)}，${h(CLOSE[r.closeness ?? 1])}，${h(REL_FREQ[r.frequency] || '')}${r.since ? '，自 ' + h(r.since) : ''}${r.until ? ' 至 ' + h(r.until) : ''}${isMutual(r) ? '（双方都算）' : ''} <span class="pe-chip">${h(REL_BASIS[r.basis] || '依据未注明')}</span>${r.evidence ? `<div class="pe-muted">依据：${h(r.evidence)}</div>` : ''}`;
+}
+function nwDetail(st, v, asOf) {
+    const sel = v.sel;
+    if (!sel) return '';
+    const nm = id => byId(st.persons, id)?.name || '?';
+    if (sel.kind === 'edge') {
+        const rels = relationsBetween(st, sel.a, sel.b, asOf);
+        const flows = edgeFlows(st, sel.a, sel.b, asOf);
+        return `<div class="pe-card pe-nw-detail"><div class="pe-row"><b>${h(nm(sel.a))} — ${h(nm(sel.b))}</b><span class="pe-spacer"></span><button class="pe-mini" data-act="nw-unsel">✕</button></div>
+          <h5>关系</h5>${rels.length ? rels.map(r => `<div class="pe-op-line">${nwRelText(st, r)}</div>`).join('') : '<div class="pe-muted">两人之间没有手填的关系（可能是同刊同事自动算的，或只有传话记录）</div>'}
+          <h5>实际传过的话</h5>${flows.length ? flows.map(f => `<div class="pe-op-line">${h(f.text)}</div>`).join('') : '<div class="pe-muted">截至此日，推演里两人之间没有谈起主角的作品、也没有泄露过什么</div>'}
+          <div class="pe-row"><span class="pe-spacer"></span><button data-act="edit-item" data-kind="person" data-id="${sel.a}">编辑 ${h(nm(sel.a))} 的关系</button></div></div>`;
+    }
+    const p = byId(st.persons, sel.id); if (!p) return '';
+    const one = new Map();
+    for (const q of st.persons || []) {
+        if (q.id === p.id || q.active === false) continue;
+        const rels = relationsBetween(st, p.id, q.id, asOf);
+        if (rels.length) one.set(q.id, rels);
+    }
+    const two = new Map();
+    for (const qid of one.keys()) for (const q of st.persons || []) {
+        if (q.id === p.id || one.has(q.id) || q.active === false) continue;
+        if (relationsBetween(st, qid, q.id, asOf).length) { if (!two.has(q.id)) two.set(q.id, []); two.get(q.id).push(qid); }
+    }
+    const reads = (st.receptions || []).filter(r => r.personId === p.id && READ_DONE.includes(r.read) && (!asOf || !r.readDate || cmp(r.readDate, asOf) <= 0));
+    return `<div class="pe-card pe-nw-detail"><div class="pe-row">${personTag(p)} <span class="pe-muted">与主角：${h(CLOSE[p.closeness || 0])}</span><span class="pe-spacer"></span><button class="pe-mini" data-act="nw-unsel">✕</button></div>
+      <h5>一度关系 <span class="pe-muted">${one.size}</span></h5>${[...one.entries()].map(([qid, rels]) => `<div class="pe-op-line"><button class="pe-linkbtn" data-act="nw-pick" data-id="${qid}">${h(nm(qid))}</button>　${rels.map(r => `${r.from === p.id ? '→' : '←'} ${h(REL_TYPES[r.type] || r.type)}${r.basis === 'guess' ? '（推测）' : ''}`).join('；')}</div>`).join('') || '<div class="pe-muted">没有手填的关系</div>'}
+      <h5>二度关系 <span class="pe-muted">${two.size}，经由谁</span></h5>${[...two.entries()].map(([qid, via]) => `<div class="pe-op-line"><button class="pe-linkbtn" data-act="nw-pick" data-id="${qid}">${h(nm(qid))}</button>　<span class="pe-muted">经 ${via.map(x => h(nm(x))).join('、')}</span></div>`).join('') || '<div class="pe-muted">无</div>'}
+      <h5>他怎么接触到主角的作品</h5>${reads.length ? reads.map(r => `<div class="pe-op-line">《${h(byId(st.works, r.workId)?.title || '?')}》 ${h(r.readDate || '')} · ${h(CHANNELS[r.channel] || r.channel || '')}${r.channel === 'recommend' && st.recommends?.[r.workId]?.[r.personId] ? ' · ' + h(nm(st.recommends[r.workId][r.personId].by)) + ' 谈起' : ''}</div>`).join('') : '<div class="pe-muted">截至此日没有读过</div>'}
+      <div class="pe-row"><span class="pe-spacer"></span><button data-act="nw-path-from" data-id="${p.id}">从他查信息路径</button><button data-act="edit-item" data-kind="person" data-id="${p.id}">编辑关系</button></div></div>`;
+}
+function nwPaths(st, v, asOf) {
+    const nm = id => byId(st.persons, id)?.name || '?';
+    const paths = findPaths(st, v.pa, v.pb, { asOf, implicit: !!v.implicit });
+    const own = (st.receptions || []).filter(r => r.personId === v.pb && READ_DONE.includes(r.read) && (!asOf || !r.readDate || cmp(r.readDate, asOf) <= 0));
+    const ownHtml = own.length ? `<div class="pe-muted">${h(nm(v.pb))} 自己接触作品的渠道：${own.map(r => `《${h(byId(st.works, r.workId)?.title || '?')}》${h(CHANNELS[r.channel] || r.channel || '')}${r.channel === 'recommend' && st.recommends?.[r.workId]?.[r.personId] ? '（' + h(nm(st.recommends[r.workId][r.personId].by)) + ' 谈起）' : ''}`).join('；')}——不要把他读到归功给路径上的人</div>` : '';
+    if (!paths.length) return `<div class="pe-muted">三跳之内没有关系路径：两人之间的消息只能经过报刊、沙龙之类的公开渠道。</div>${ownHtml}`;
+    return paths.map(pt => `<div class="pe-nw-pathrow ${pt.realized ? 'done' : ''}">${pt.realized ? '<span class="pe-chip pe-chip-warn">每一跳都真的传过</span> ' : ''}${h(nm(pt.ids[0]))}${pt.hops.map(hp => ` <span class="pe-nw-hop ${hp.flows.length ? 'on' : ''}" data-tip="${h(hp.rels.map(r => `${nm(r.from)}→${nm(r.to)} ${REL_TYPES[r.type] || r.type}${r.basis ? '（' + (REL_BASIS[r.basis] || '') + '）' : ''}`).join('\n') || '同刊同事（自动）')}${hp.flows.length ? '\n' + hp.flows.map(f => f.text).join('\n') : '\n这一跳没有传过话'}">${hp.flows.length ? '⇒' : '→'}</span> ${h(nm(hp.b))}`).join('')}</div>`).join('') + `<div class="pe-muted">⇒ 这一跳在推演里真的谈起过主角的作品或说过主角的事；→ 只是有关系。</div>${ownHtml}`;
 }
 function bindNetwork() {
     const svg = document.getElementById('pe-nw');
@@ -3069,7 +3161,7 @@ function bindNetwork() {
     let drag = null;
     svg.addEventListener('pointerdown', ev => {
         const g = ev.target.closest('.pe-nw-n'); if (!g) return;
-        drag = g.dataset.id; svg.setPointerCapture(ev.pointerId); ev.preventDefault();
+        drag = g.dataset.id; ev.preventDefault();
     });
     svg.addEventListener('pointermove', ev => {
         if (!drag) return;
@@ -3078,8 +3170,20 @@ function bindNetwork() {
         svg.querySelectorAll(`line[data-a="${drag}"]`).forEach(l => { l.setAttribute('x1', P[drag].x); l.setAttribute('y1', P[drag].y); });
         svg.querySelectorAll(`line[data-b="${drag}"]`).forEach(l => { l.setAttribute('x2', P[drag].x); l.setAttribute('y2', P[drag].y); });
     });
-    const end = () => { drag = null; };
-    svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', end);
+    let moved = false, downAt = null;
+    svg.addEventListener('pointerdown', ev => { moved = false; downAt = { x: ev.clientX, y: ev.clientY }; }, true);
+    svg.addEventListener('pointermove', ev => { if (downAt && Math.abs(ev.clientX - downAt.x) + Math.abs(ev.clientY - downAt.y) > 4) moved = true; }, true);
+    const end = ev => {
+        const wasDrag = drag; drag = null;
+        if (moved || !downAt) { downAt = null; return; }
+        downAt = null;
+        // 点击（没拖动）：选中人物或连线，下方显示详情
+        const g = ev.target.closest?.('.pe-nw-n');
+        if (g && g.dataset.id !== '__me') { simView.sel = { kind: 'node', id: g.dataset.id }; refresh(); return; }
+        const hit = ev.target.closest?.('[data-edge]');
+        if (hit && !wasDrag) { const [a, b] = hit.dataset.edge.split('|'); if (a !== '__me' && b !== '__me') { simView.sel = { kind: 'edge', a, b }; refresh(); } }
+    };
+    svg.addEventListener('pointerup', end); svg.addEventListener('pointercancel', () => { drag = null; downAt = null; });
     svg.addEventListener('mouseover', ev => {
         const g = ev.target.closest('.pe-nw-n'); if (!g || drag) return;
         const id = g.dataset.id;

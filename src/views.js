@@ -2,7 +2,7 @@
 // 颜色只表达一件事：褒贬（绿=肯定、金=参半、红=批评）或私交深浅（与人物卡片同色）；
 // 泳道、线型和文字标签负责身份，所以不靠颜色也能读。
 
-import { byId, LAYERS, READ_STATES, STRENGTH, CHANNELS, REL_TYPES, ROLES, knowsPen, effectivePubDate, READ_DONE } from './engine.js';
+import { byId, LAYERS, READ_STATES, STRENGTH, CHANNELS, REL_TYPES, REL_BASIS, ROLES, knowsPen, effectivePubDate, READ_DONE, relCat, relOn, isMutual, relationsOf } from './engine.js';
 import { cmp, addDays, diffDays } from './date.js';
 import { escapeHtml as h, truncate } from './util.js';
 
@@ -104,30 +104,57 @@ export function timelineSvg(st, tl) {
 
 // ———————————— 人物关系网 ————————————
 
-/** 节点和边。edgeKinds：rel 熟人关系 / close 与主角私交 / talk 谈起作品 / leak 身份外泄 */
-export function networkData(st) {
+/**
+ * 节点和边。edge.kind：rel 熟人关系（cat=private/literary/social）/ close 与主角私交 / talk 谈起作品 / leak 可能泄露身份或私事。
+ * opts.asOf：只画那天有效的关系与已发生的传递；opts.implicit：画出同刊同事（推演自动算的，没手填）。
+ */
+export function networkData(st, opts = {}) {
+    const asOf = opts.asOf || st.currentDate || null;
     const persons = (st.persons || []).filter(p => p.active !== false);
-    const nodes = [{ id: '__me', name: '主角', me: true }, ...persons.map(p => ({ id: p.id, name: p.name, close: p.closeness || 0, reads: (st.receptions || []).filter(r => r.personId === p.id && READ_DONE.includes(r.read) && (!r.readDate || !st.currentDate || cmp(r.readDate, st.currentDate) <= 0)).length, p }))];
+    const nodes = [{ id: '__me', name: '主角', me: true }, ...persons.map(p => ({ id: p.id, name: p.name, close: p.closeness || 0, reads: (st.receptions || []).filter(r => r.personId === p.id && READ_DONE.includes(r.read) && (!r.readDate || !asOf || cmp(r.readDate, asOf) <= 0)).length, p }))];
     const has = new Set(nodes.map(n => n.id));
+    const nm = id => byId(st.persons, id)?.name || '?';
     const edges = [];
     const pair = new Map();
     for (const p of persons) for (const r of p.relations || []) {
-        if (!has.has(r.to)) continue;
+        if (!has.has(r.to) || r.to === p.id || !relOn(r, asOf)) continue;
         const k = [p.id, r.to].sort().join('|');
-        if (pair.has(k)) { pair.get(k).both = true; continue; }
-        const e = { kind: 'rel', a: p.id, b: r.to, w: 1 + (r.closeness ?? 1), type: r.type, tip: `${p.name} → ${byId(st.persons, r.to)?.name}：${REL_TYPES[r.type] || r.type}，${CLOSE[r.closeness ?? 1]}` };
+        const line = `${nm(p.id)} → ${nm(r.to)}：${REL_TYPES[r.type] || r.type}，${CLOSE[r.closeness ?? 1]}${r.since ? '，自 ' + r.since : ''}${r.until ? ' 至 ' + r.until : ''}${r.basis ? '（' + (REL_BASIS[r.basis] || r.basis) + '）' : ''}${r.evidence ? '\n依据：' + r.evidence : ''}`;
+        if (pair.has(k)) { const e = pair.get(k); e.both = true; e.tip += '\n' + line; e.w = Math.max(e.w, 1 + (r.closeness ?? 1)); if (r.basis !== 'guess') e.guess = false; continue; }
+        const e = { kind: 'rel', a: p.id, b: r.to, w: 1 + (r.closeness ?? 1), type: r.type, cat: relCat(r.type), guess: r.basis === 'guess', both: isMutual(r), tip: line };
+        pair.set(k, e); edges.push(e);
+    }
+    if (opts.implicit) for (const p of persons) for (const r of relationsOf(st, p)) {
+        if (!r.implicit || !has.has(r.to)) continue;
+        const k = [p.id, r.to].sort().join('|');
+        if (pair.has(k)) continue;
+        const e = { kind: 'rel', a: p.id, b: r.to, w: 1, type: 'colleague', cat: 'literary', implicit: true, both: true, tip: `${nm(p.id)} — ${nm(r.to)}：同一刊物的同事（没手填，推演按“每周见、一般熟”自动算）` };
         pair.set(k, e); edges.push(e);
     }
     for (const p of persons) if ((p.closeness || 0) >= 1) edges.push({ kind: 'close', a: '__me', b: p.id, w: p.closeness, tip: `与主角：${CLOSE[p.closeness]}` });
     for (const [wid, box] of Object.entries(st.recommends || {})) for (const [pid, x] of Object.entries(box || {})) {
-        if (!has.has(pid) || !has.has(x.by) || (st.currentDate && x.date && cmp(x.date, st.currentDate) > 0)) continue;
-        edges.push({ kind: 'talk', a: x.by, b: pid, dir: true, w: 1, tip: `${x.date} ${x.byName || ''} 向 ${byId(st.persons, pid)?.name} 谈起《${byId(st.works, wid)?.title || ''}》` });
+        if (!has.has(pid) || !has.has(x.by) || (asOf && x.date && cmp(x.date, asOf) > 0)) continue;
+        edges.push({ kind: 'talk', a: x.by, b: pid, dir: true, w: 1, tip: `${x.date} ${x.byName || ''} 向 ${nm(pid)} 谈起《${byId(st.works, wid)?.title || ''}》` });
     }
+    const ST = { pending: '未确认', confirmed: '确有其事', denied: '没有' };
     for (const l of st.identityLeaks || []) {
-        if (!has.has(l.from) || !has.has(l.to)) continue;
-        edges.push({ kind: 'leak', a: l.from, b: l.to, dir: true, w: 1.5, tip: `${l.date} ${byId(st.persons, l.from)?.name} 可能向 ${byId(st.persons, l.to)?.name} 透露了“${byId(st.pennames, l.pennameId)?.name || ''}”的身份（${l.status === 'pending' ? '未确认' : l.status}）` });
+        if (!has.has(l.from) || !has.has(l.to) || l.status === 'denied' || (asOf && l.date && cmp(l.date, asOf) > 0)) continue;
+        edges.push({ kind: 'leak', a: l.from, b: l.to, dir: true, w: 1.5, pending: l.status === 'pending', tip: `${l.date} ${nm(l.from)} 可能向 ${nm(l.to)} 透露了“${byId(st.pennames, l.pennameId)?.name || ''}”的身份（${ST[l.status] || l.status}）` });
     }
-    return { nodes, edges };
+    for (const l of st.factLeaks || []) {
+        if (!has.has(l.from) || !has.has(l.to) || l.status === 'denied' || (asOf && l.date && cmp(l.date, asOf) > 0)) continue;
+        const f = (st.privateFacts || []).find(x => x.id === l.factId);
+        edges.push({ kind: 'leak', a: l.from, b: l.to, dir: true, w: 1.5, pending: l.status === 'pending', tip: `${l.date} ${nm(l.from)} 可能向 ${nm(l.to)} 说起主角的私事“${(f?.text || '').slice(0, 24)}”（${ST[l.status] || l.status}）` });
+    }
+    return { nodes, edges, asOf };
+}
+
+/** 按显示开关筛边；隐藏孤立人物时，去掉没有任何可见连线的人 */
+export function visibleNetwork(data, show = {}, hideIsolated = false) {
+    const edges = data.edges.filter(e => show[e.kind] !== false && (e.kind !== 'rel' || show['cat_' + e.cat] !== false));
+    if (!hideIsolated) return { ...data, edges };
+    const used = new Set(['__me']); for (const e of edges) { used.add(e.a); used.add(e.b); }
+    return { ...data, edges, nodes: data.nodes.filter(n => used.has(n.id)) };
 }
 
 /** 简单的力导向布局（确定性：同一份数据每次结果一样）。pos 里已有的位置会保留 */
@@ -169,13 +196,17 @@ export function layoutNetwork(data, pos = {}, W = 900, H = 620) {
 
 export function networkSvg(st, data, P, show, W = 900, H = 620) {
     const pens = (st.pennames || []).filter(pen => (st.works || []).some(w => w.pennameId === pen.id));
-    const ed = data.edges.filter(e => show[e.kind] !== false && P[e.a] && P[e.b]);
+    const ed = data.edges.filter(e => show[e.kind] !== false && (e.kind !== 'rel' || show['cat_' + e.cat] !== false) && P[e.a] && P[e.b]);
     const line = e => {
         const a = P[e.a], b = P[e.b];
-        const cls = `pe-nw-e pe-nw-${e.kind}${e.type === 'family' ? ' fam' : ''}`;
+        const cls = `pe-nw-e pe-nw-${e.kind}${e.kind === 'rel' ? ' c-' + e.cat : ''}${e.type === 'family' ? ' fam' : ''}${e.guess ? ' guess' : ''}${e.implicit ? ' implicit' : ''}${e.pending ? ' pending' : ''}`;
         const sw = e.kind === 'close' ? 1 + e.w * 0.8 : e.kind === 'rel' ? 0.8 + e.w * 0.5 : 1.6;
         const stroke = e.kind === 'close' ? CLOSE_COLOR[e.w] : '';
-        return `<line class="${cls}" x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" stroke-width="${sw}" ${stroke ? `stroke="${stroke}"` : ''} ${e.dir ? 'marker-end="url(#pe-nw-arrow)"' : ''} data-a="${e.a}" data-b="${e.b}" data-tip="${h(e.tip)}"/>`;
+        const one = e.kind === 'rel' && !e.both; // 只有一方写了的关系：箭头指向被写的人
+        const xy = `x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}"`;
+        const sel = e.kind === 'rel' || e.kind === 'talk' || e.kind === 'leak' ? ` data-edge="${e.a}|${e.b}"` : '';
+        return `<line class="${cls}" ${xy} stroke-width="${sw}" ${stroke ? `stroke="${stroke}"` : ''} ${e.dir || one ? 'marker-end="url(#pe-nw-arrow)"' : ''} data-a="${e.a}" data-b="${e.b}"/>`
+            + `<line class="pe-nw-hit" ${xy} data-a="${e.a}" data-b="${e.b}"${sel} data-tip="${h(e.tip)}"/>`;
     };
     const node = n => {
         const p = P[n.id];
@@ -188,7 +219,7 @@ export function networkSvg(st, data, P, show, W = 900, H = 620) {
     return `<svg class="pe-nw" id="pe-nw" viewBox="0 0 ${W} ${H}" role="img" aria-label="人物关系网">
       <defs><marker id="pe-nw-arrow" viewBox="0 0 10 10" refX="22" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/></marker></defs>
       <g class="pe-nw-edges">${ed.map(line).join('')}</g>
-      <g class="pe-nw-nodes">${data.nodes.map(node).join('')}</g>
+      <g class="pe-nw-nodes">${data.nodes.filter(n => P[n.id]).map(node).join('')}</g>
     </svg>`;
 }
 

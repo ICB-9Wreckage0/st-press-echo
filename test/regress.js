@@ -436,4 +436,29 @@ function base(seed = 'reg') {
     assert(again && again.seenAt, '回滚重推后“已读到”还在');
     ok('不看报的主角：推演出的文章不算知道；聊天里提到的会对上推演里的那篇并标读到（回滚重推也保留）');
 }
+// 23. 关系网：双向关系、按日期画、路径只在每一跳真的传过话时才算“已传到”
+{
+    const { networkData } = await import('../src/views.js');
+    const t = base('rw'); t.currentDate = '1890-09-01';
+    const P = id => t.persons.find(p => p.id === id);
+    P('vin').relations = [{ to: 'theo', type: 'family' }];
+    P('mir').relations = [{ to: 'gour', type: 'met', closeness: 0, frequency: 'rare', since: '1890-05-13', basis: 'story', evidence: '05-13 茶室同桌' }];
+    P('gour').relations = [{ to: 'theo', type: 'friend', since: '1890-10-01' }];
+    assert(E.relationsOf(t, P('theo')).some(r => r.to === 'vin' && r.reverse), '家人默认双方都算');
+    assert(!E.relationsOf(t, P('gour')).some(r => r.to === 'mir'), '单向关系不反过来算');
+    const d1 = networkData(t, { asOf: '1890-05-01' }), d2 = networkData(t, { asOf: '1890-06-01' });
+    const has = (d, a, b) => d.edges.some(e => e.kind === 'rel' && [e.a, e.b].sort().join() === [a, b].sort().join());
+    assert(!has(d1, 'mir', 'gour') && has(d2, 'mir', 'gour'), '5 月 13 日之前还没见过面');
+    assert(!has(d2, 'gour', 'theo'), '10 月才开始的关系 9 月不画');
+    const b = B.normalizeBundle({ persons: [{ name: 'X', relations: [{ to: 'Y', type: 'met', basis: '推测', evidence: 'e', mutual: true }] }] });
+    assert.equal(b.persons[0].relations[0].basis, 'guess'); assert.equal(b.persons[0].relations[0].mutual, true);
+    // 路径：米尔博—古尔蒙—（无）；梵高—提奥 一跳
+    t.recommends = { aine: { theo: { date: '1890-07-01', by: 'vin', byName: '文森特', polarity: 1 } } };
+    const ps = E.findPaths(t, 'vin', 'theo', { asOf: '1890-09-01' });
+    assert(ps[0].ids.length === 2 && ps[0].realized, '一跳且真的谈起过');
+    const ps2 = E.findPaths(t, 'vin', 'theo', { asOf: '1890-06-01' });
+    assert(!ps2[0].realized, '6 月还没谈起');
+    assert(!E.findPaths(t, 'mir', 'theo', { asOf: '1890-09-01' }).length, '没有路径就照实说');
+    ok('关系网：家人双向、单向不反推；按日期只画有效关系；路径分清“有关系”和“真的传过话”');
+}
 console.log('回归测试全部通过');
