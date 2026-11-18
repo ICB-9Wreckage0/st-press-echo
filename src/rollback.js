@@ -9,7 +9,26 @@ import { recomputeReputation } from './engine.js';
 
 const MAX_SNAPSHOTS = 40;
 
-export function takeSnapshot(state, mesId, toDate = null) {
+/** 消息正文的指纹（MinHash，64 个数）：改写、换回复时比较新旧正文有多大不同，不必存下全文 */
+export function textSig(text, k = 64) {
+    const t = String(text || '').replace(/\s+/g, '');
+    if (!t) return [];
+    const sh = new Set(); for (let i = 0; i + 4 <= Math.max(4, t.length); i++) sh.add(t.slice(i, i + 4));
+    const out = new Array(k).fill(0xffffffff);
+    for (const g of sh) {
+        let h = 0x811c9dc5; for (let i = 0; i < g.length; i++) { h ^= g.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+        for (let j = 0; j < k; j++) { const x = (Math.imul(h ^ Math.imul(j + 1, 0x9e3779b1), 0x85ebca6b) >>> 0) ^ (h >>> 13); const y = Math.imul(x, 0xc2b2ae35) >>> 0; if (y < out[j]) out[j] = y; }
+    }
+    return out;
+}
+/** 两段指纹的相似度（0–1，约等于 4 字片段的 Jaccard 相似度）；缺指纹返回 null */
+export function sigSim(a, b) {
+    if (!a?.length || !b?.length || a.length !== b.length) return null;
+    let n = 0; for (let i = 0; i < a.length; i++) if (a[i] === b[i]) n++;
+    return n / a.length;
+}
+
+export function takeSnapshot(state, mesId, toDate = null, text = null) {
     if (mesId == null) return;
     state.snapshots = state.snapshots || [];
     // 同一楼层只留最早那份（它代表“这条消息出现之前”的状态）
@@ -17,7 +36,7 @@ export function takeSnapshot(state, mesId, toDate = null) {
     // 轻量快照：之后新生成的掷骰、阅读记录、事件、推荐都带递增序号 q，回滚时撤掉 q 大于 rollQ 的即可，
     // 不必复制整张表（旧版每个快照几十 KB，40 个就是几 MB，拖慢聊天保存）
     state.snapshots.push({
-        v: 2, mesId, toDate,
+        v: 2, mesId, toDate, sig: text != null ? textSig(text) : undefined,
         at: new Date().toISOString(),
         currentDate: state.currentDate,
         weekdayWarning: state.weekdayWarning || null,
@@ -60,8 +79,8 @@ export function rollbackFrom(state, mesId) {
     for (const e of state.ledger || []) {
         if (e.origin === 'manual' || keepEv(e)) continue;
         removed.push(e);
-        if (e.key && !e.auto && (e.status === 'approved' || e.status === 'rejected' || e.text?.body || e.note)) {
-            state.decisionMemo[e.key] = { date: e.date, status: e.status, polarity: e.polarity, text: e.text, note: e.note, flags: e.flags };
+        if (e.key && (!e.auto || e.seenAt) && (e.status === 'approved' || e.status === 'rejected' || e.text?.body || e.note || e.seenAt)) {
+            state.decisionMemo[e.key] = { date: e.engineDate || e.date, setDate: e.engineDate ? e.date : undefined, seenAt: e.seenAt, status: e.status, polarity: e.polarity, text: e.text, note: e.note, flags: e.flags };
         }
     }
     state.ledger = (state.ledger || []).filter(e => e.origin === 'manual' || keepEv(e));
@@ -101,6 +120,8 @@ export function reapplyDecisions(state, events) {
         if (!m || m.date !== ev.date) continue;
         ev.status = m.status;
         ev.polarity = m.polarity;
+        if (m.setDate) { ev.engineDate = ev.date; ev.date = m.setDate; }
+        if (m.seenAt) ev.seenAt = m.seenAt;
         if (m.text) ev.text = m.text;
         if (m.note) ev.note = m.note;
         if (m.flags) ev.flags = m.flags;

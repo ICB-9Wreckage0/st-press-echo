@@ -17,7 +17,7 @@ function knowsPenOwner(st, person, pen) {
     return !!(pen?.publicIdentityKnown || knowsPen(st, person, pen.id));
 }
 
-export function personEntry(st, p) {
+export function personEntry(st, p, max = 0) {
     const today = st.currentDate;
     const recs = (st.receptions || []).filter(r => r.personId === p.id && READ_DONE.includes(r.read) && (!r.readDate || !today || cmp(r.readDate, today) <= 0));
     const L = [`${LORE_TAG}${p.name}${(p.aliases || []).length ? '（' + p.aliases.join('、') + '）' : ''}`];
@@ -60,22 +60,39 @@ export function personEntry(st, p) {
         }
     }
     L.push('（以上是此人私下的看法与所知。他会按场合和与主角的交情决定说多少；没见报的评论不会被当作已发表；他不知道的事不能说出来。）');
-    return { key: [p.name, ...(p.aliases || [])].filter(Boolean), content: L.join('\n'), comment: `${LORE_TAG}${p.name}` };
+    return { key: [p.name, ...(p.aliases || [])].filter(Boolean), content: fitLore(L, max), comment: `${LORE_TAG}${p.name}` };
 }
 
-export function workEntry(st, w) {
+export function workEntry(st, w, settings = null) {
     const pen = byId(st.pennames, w.pennameId);
     const o = byId(st.outlets, w.outletId);
-    const pub = (st.ledger || []).filter(e => e.workId === w.id && knownToUser(st, e) && LAYERS[e.layer]?.public);
+    const pub = (st.ledger || []).filter(e => e.workId === w.id && e.status === 'approved' && LAYERS[e.layer]?.public && (!st.currentDate || cmp(e.date, st.currentDate) <= 0));
     const L = [`${LORE_TAG}《${w.title}》`];
     L.push(`署名“${pen?.name || '?'}”${pen && !pen.publicIdentityKnown ? '（公众不知道作者是谁）' : ''}；${FORMS[w.form] || ''}；${w.pubDate || '日期不详'}${w.endDate ? '–' + w.endDate : ''} 发表于《${o?.name || '?'}》`);
     if (w.summary) L.push('内容：' + truncate(w.summary, 160));
     if ((w.themes || []).length) L.push('题材：' + w.themes.join('、'));
     if (pub.length) {
         L.push('已见报的反响：');
-        for (const e of pub.slice(-6)) L.push(`- ${e.date.slice(5)} ${byId(st.outlets, e.outletId)?.name ? '《' + byId(st.outlets, e.outletId).name + '》' : ''}${byId(st.persons, e.personId)?.name || e.personName || ''} ${LAYERS[e.layer]?.label || ''}${e.count ? '约 ' + e.count : ''}${e.layer === 'mentions' || e.layer === 'reader_letters' ? '' : '（' + ['批评', '褒贬参半', '肯定'][(e.polarity ?? 0) + 1] + '）'}${e.text?.summary ? '：' + truncate(e.text.summary, 60) : ''}`);
+        for (const e of pub.slice(-6)) L.push(`- ${knownToUser(st, e, settings) ? '' : '（主角还没读到）'}${e.date.slice(5)} ${byId(st.outlets, e.outletId)?.name ? '《' + byId(st.outlets, e.outletId).name + '》' : ''}${byId(st.persons, e.personId)?.name || e.personName || ''} ${LAYERS[e.layer]?.label || ''}${e.count ? '约 ' + e.count : ''}${e.layer === 'mentions' || e.layer === 'reader_letters' ? '' : '（' + ['批评', '褒贬参半', '肯定'][(e.polarity ?? 0) + 1] + '）'}${e.text?.summary ? '：' + truncate(e.text.summary, 60) : ''}`);
     }
     return { key: [w.title, ...(w.aliases || [])].filter(Boolean), content: L.join('\n'), comment: `${LORE_TAG}《${w.title}》` };
+}
+
+/** 条目超出字数上限时，先从最早读过的作品删起，再硬截断 */
+export function fitLore(L, max) {
+    max = Math.floor(Number(max) || 0);
+    let text = L.join('\n');
+    if (!max || text.length <= max) return text;
+    const lines = [...L];
+    let dropped = 0;
+    while (lines.join('\n').length > max) {
+        const i = lines.findIndex(x => x.startsWith('- 《'));
+        if (i < 0) break;
+        lines.splice(i, 1); dropped++;
+    }
+    if (dropped) { const j = lines.findIndex(x => x.startsWith('- 《')); lines.splice(j < 0 ? lines.length - 1 : j, 0, `（更早读过的 ${dropped} 部从略）`); }
+    text = lines.join('\n');
+    return text.length > max ? text.slice(0, max - 1) + '…' : text;
 }
 
 /** 署名的公众形象：各圈子最近一次整理的公开说法 + 作者的公开说法。没有就不写 */
@@ -114,9 +131,9 @@ export async function syncLore(st, settings) {
     if (!data || typeof data !== 'object') data = { entries: {} };
     data.entries = data.entries || {};
     const want = [
-        ...lorePersons(st, settings.loreScope).map(p => ({ id: 'per:' + p.id, ...personEntry(st, p) })),
+        ...lorePersons(st, settings.loreScope).map(p => ({ id: 'per:' + p.id, ...personEntry(st, p, settings.loreMaxChars) })),
         ...(st.pennames || []).map(pen => ({ pen, e: penEntry(st, pen) })).filter(x => x.e).map(x => ({ id: 'pen:' + x.pen.id, ...x.e })),
-        ...(settings.loreWorks !== false ? (st.works || []).filter(w => !w.pubDate || !st.currentDate || cmp(w.pubDate, st.currentDate) <= 0).map(w => ({ id: 'wrk:' + w.id, ...workEntry(st, w) })) : []),
+        ...(settings.loreWorks !== false ? (st.works || []).filter(w => w.pubDate && (!st.currentDate || cmp(w.pubDate, st.currentDate) <= 0)).map(w => ({ id: 'wrk:' + w.id, ...workEntry(st, w, settings) })) : []),
     ];
     st.lore = st.lore && st.lore.book === name ? st.lore : { book: name, uids: {} };
     const uids = st.lore.uids;

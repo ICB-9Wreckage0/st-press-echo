@@ -33,6 +33,10 @@ export const DEFAULT_SETTINGS = {
     injectPosition: 1, // 0 = 系统提示词内，1 = 聊天内（按深度），2 = 最前
     injectDepth: 4,
     injectMaxItems: 12,
+    injectMaxRumors: 5,
+    knowPublic: 'reads',
+    clipDays: 3,
+    loreMaxChars: 1500,
     injectEraNotes: true,
     injectOffscreen: 'known', // 幕后内容注入：off 不注入 / known 只注入主角能知道的 / all 全部（标明主角不知道）
     // 一键推演时让 AI 补完

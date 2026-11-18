@@ -623,7 +623,12 @@ export function effectivePubDate(state, work) {
     const r = roll(state.seed || 'press-echo', `${work.id}|pubdate`);
     if (prec === 'xun') { const day = Number(d.slice(8)); const span = day >= 21 ? daysInMonth(d) - day + 1 : 10; return addDays(d, Math.floor(r * span)); }
     if (prec === 'month') return addDays(d.slice(0, 8) + '01', Math.floor(r * daysInMonth(d)));
-    if (prec === 'noLaterThan') return addDays(d, -Math.floor(r * 21));
+    if (prec === 'noLaterThan') {
+        // 知道最早可能日期（如“七月中旬交稿”）就在区间里取；不知道才往前最多 20 天
+        const lo = normalizeISO(work.dateFrom || '');
+        const span = lo && cmp(lo, d) <= 0 ? diffDays(d, lo) + 1 : 21;
+        return addDays(d, -Math.floor(r * span));
+    }
     return d;
 }
 const PREC_TXT = { xun: '只知道旬', month: '只知道月份', noLaterThan: '只知道不晚于这天' };
@@ -1083,13 +1088,53 @@ export function rerollPerson(state, personId) {
  * - 寄给主角的私信：收到那天起知道（没写收信人的私信按寄给主角算）；
  * - 别人之间的私信、私下的事：只有标了“主角得知”的日子之后才知道。
  */
-export function knownToUser(state, ev) {
-    if (ev.status !== 'approved') return false;
+/**
+ * 主角从哪天起知道这条反响（不知道返回 null）。
+ * 公开见报 ≠ 主角读到：s.knowPublic 决定公开文章怎样到主角手里——
+ *   all：见报当天就知道（旧规则）；
+ *   reads：主角常读的刊物当天知道，其余（含各报转载汇总）靠剪报，s.clipDays 天后知道（0 = 没有剪报，只能靠你标记或聊天里提到）；
+ *   marked：只有你标了“主角已读到”的才算。
+ * 聊天/整理里录入的（手动）、转到主角手上的读者来信、你标过 seenAt 的，不受此限。
+ */
+export function knownSince(state, ev, s = null) {
+    if (ev.status !== 'approved') return null;
+    if (LAYERS[ev.layer]?.public) {
+        if (ev.seenAt) return ev.seenAt;
+        if (ev.origin === 'manual' || ev.layer === 'reader_letters') return ev.date; // 读者来信由报馆转到主角手上
+        const mode = s?.knowPublic || 'all';
+        if (mode === 'all') return ev.date;
+        if (mode === 'marked') return null;
+        if (byId(state.outlets, ev.outletId)?.userReads) return ev.date;
+        const n = Math.floor(Number(s?.clipDays ?? 3));
+        return n > 0 ? addDays(ev.date, n) : null;
+    }
+    if (isToProtagonist(ev)) return ev.knownAt || ev.date;
+    return ev.knownAt || null;
+}
+/**
+ * 聊天里提到了一篇推演出来的公开文章（整理材料时）：对上已有的那条就标“主角已读到”，不另记一条。
+ * 推演里还是候选/排期的，聊天既然写了它见报，就按聊天的日期入账。返回对上的事件或 null。
+ */
+export function matchSeenFromChat(state, r) {
+    if (!LAYERS[r.layer]?.public) return null;
+    const ev = (state.ledger || []).find(e => e.origin === 'engine' && LAYERS[e.layer]?.public && ['approved', 'scheduled', 'candidate'].includes(e.status)
+        && (e.workId || null) === (r.workId || null) && (!r.personId || e.personId === r.personId) && (!r.outletId || !e.outletId || e.outletId === r.outletId)
+        && (e.layer === r.layer || (e.layer !== 'reader_letters' && e.layer !== 'mentions' && r.layer !== 'reader_letters' && r.layer !== 'mentions'))
+        && Math.abs(diffDays(e.date, r.date)) <= 10);
+    if (!ev) return null;
+    if (ev.status !== 'approved') { if (ev.date !== r.date) { ev.engineDate = ev.engineDate || ev.date; ev.date = r.date; } setStatus(state, ev, 'approved'); }
+    if (r.summary && !ev.text?.summary) ev.text = { ...(ev.text || { body: '', title: '', byline: '', section: '' }), summary: r.summary };
+    if (!(ev.flags || []).includes('聊天里提到过')) ev.flags = [...(ev.flags || []), '聊天里提到过'];
+    const seen = state.currentDate && cmp(state.currentDate, ev.date) > 0 ? state.currentDate : ev.date;
+    if (!ev.seenAt || cmp(seen, ev.seenAt) < 0) ev.seenAt = seen;
+    return ev;
+}
+export function knownToUser(state, ev, s = null) {
+    const d = knownSince(state, ev, s);
     const today = state.currentDate;
+    if (!d) return false;
     if (today && cmp(ev.date, today) > 0) return false;
-    if (LAYERS[ev.layer]?.public) return true;
-    if (isToProtagonist(ev)) return !ev.knownAt || !today || cmp(ev.knownAt, today) <= 0;
-    return !!(ev.knownAt && (!today || cmp(ev.knownAt, today) <= 0));
+    return !today || cmp(d, today) <= 0;
 }
 export const isToProtagonist = ev => !ev.to || ev.to === 'protagonist';
 

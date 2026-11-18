@@ -358,4 +358,82 @@ function base(seed = 'reg') {
     assert(rep.skipped.some(x => x.includes('不存在')));
     ok('整理包导入自我认知、主角以为（人物或圈子）、别人的看法（同样核对来源）');
 }
+// 19. 见报 ≠ 主角读到
+{
+    const t = base('kn'); t.currentDate = '1890-09-05';
+    t.outlets.find(o => o.id === 'echo').userReads = true;
+    const ev = (id, o, extra = {}) => ({ id, origin: 'engine', date: '1890-09-03', layer: 'review', outletId: o, workId: 'aine', pennameId: 'ee', personId: 'gour', polarity: -1, status: 'approved', flags: [], knownAt: '1890-09-03', ...extra });
+    const a = ev('a', 'echo'), b = ev('b', 'merc'), c = ev('c', 'merc', { origin: 'manual' }), d = ev('d', 'merc', { seenAt: '1890-09-04' });
+    const R = { ...S, knowPublic: 'reads', clipDays: 3 };
+    assert(E.knownToUser(t, a, R), '常读的报刊当天读到');
+    assert(!E.knownToUser(t, b, R) && E.knownSince(t, b, R) === '1890-09-06', '不常读的靠剪报，3 天后');
+    assert(E.knownToUser(t, c, R), '剧情里录入的照旧算知道');
+    assert(E.knownToUser(t, d, { ...S, knowPublic: 'marked' }), '标了读到的算');
+    assert(!E.knownToUser(t, b, { ...S, knowPublic: 'marked' }) && !E.knownToUser(t, b, { ...R, clipDays: 0 }));
+    assert(E.knownToUser(t, b, { ...S, knowPublic: 'all' }), '旧规则');
+    t.ledger.push(a, b);
+    const inj = buildInjection(t, null, R);
+    const { workEntry } = await import('../src/lore.js');
+    assert(!inj.includes('09-03 《法兰西信使》'), '没读到的不进“主角已知的反响”');
+    assert(workEntry(t, t.works[0], R).content.includes('（主角还没读到）'), '世界书里照样有（别人知道），但标明主角没读到');
+    ok('见报 ≠ 主角读到：常读的当天、其余靠剪报几天后；剧情录入与标记的不受限；世界书标明主角没读到');
+}
+
+// 20. 世界书：没有发表日期或还没发表的作品不写；人物条目超长时先删最早读过的
+{
+    const L = await import('../src/lore.js');
+    const t = base('lw'); t.currentDate = '1890-05-01';
+    t.works.push({ id: 'draft', title: '未刊稿', pennameId: 'ee', form: 'essay', outletId: '', pubDate: '', themes: [] });
+    const lines = ['头', ...Array.from({ length: 30 }, (_, i) => `- 《作品${i}》：` + '很长的看法'.repeat(10)), '尾'];
+    const f = L.fitLore(lines, 600);
+    assert(f.length <= 600 && f.includes('从略') && f.includes('作品29') && !f.includes('作品0》'));
+    const want = [];
+    globalThis.SillyTavern = { getContext: () => ({ loadWorldInfo: async () => ({ entries: {} }), saveWorldInfo: async (n, d) => { want.push(...Object.values(d.entries).map(e => e.comment)); }, chatMetadata: {} }) };
+    await L.syncLore(t, { ...S, loreBook: 'x', loreBindChat: false });
+    delete globalThis.SillyTavern;
+    assert(!want.some(x => x.includes('未刊稿')) && !want.some(x => x.includes('石田日记')), '草稿和尚未发表的不写进世界书');
+    ok('世界书不写草稿和尚未发表的作品；人物条目超长时先省略最早读过的作品');
+}
+
+// 21. 同一天改写：小改不回滚，大改回滚；“不晚于”可以给最早日期；传闻注入有上限
+{
+    const { textSig, sigSim } = await import('../src/rollback.js');
+    const a = '1890年9月2日，米尔博收到了《生者与死亡》第三册，他在书房里读了一下午，傍晚写了回信。';
+    const b = a.replace('一下午', '一个下午');
+    const c = '1890年9月2日，邮差没有来。第三册在路上耽搁了，米尔博整天在花园里侍弄鸢尾，什么也没读。';
+    assert(sigSim(textSig(a), textSig(b)) >= 0.6, '改几个字');
+    assert(sigSim(textSig(a), textSig(c)) < 0.6, '同一天，事情完全不同');
+    const t = base('nl');
+    const w = { id: 'w', pubDate: '1890-06-23', datePrecision: 'noLaterThan', dateFrom: '1890-06-20' };
+    for (let i = 0; i < 20; i++) { t.seed = 'nl' + i; const d = E.effectivePubDate(t, w); assert(cmp(d, '1890-06-20') >= 0 && cmp(d, '1890-06-23') <= 0); }
+    t.rumors = Array.from({ length: 9 }, (_, i) => ({ text: '传闻' + i, strength: 0.3 + i * 0.05 }));
+    const inj = buildInjection(t, null, { ...S, injectMaxRumors: 3 });
+    assert(inj.includes('传闻8') && inj.includes('传闻6') && !inj.includes('传闻5'));
+    ok('同一天大改会回滚、小改不会；“不晚于”的日期落在给定区间；传闻按热度只注入前几条');
+}
+// 22. 不看报的主角：只算聊天里提到或标了的；聊天提到推演里的那篇，对上并标读到，回滚重推也保留
+{
+    const M = { ...S, knowPublic: 'marked' };
+    let t, ev;
+    for (let i = 0; i < 40 && !ev; i++) {
+        t = base('nr' + i);
+        takeSnapshot(t, 5, '1890-09-01');
+        E.advanceTo(t, '1890-09-01', S, null);
+        ev = t.ledger.find(e => e.origin === 'engine' && e.status === 'approved' && E.LAYERS[e.layer]?.public && e.layer !== 'reader_letters' && e.layer !== 'mentions' && e.personId);
+    }
+    assert(ev, '样本里要有自动入账的公开评论');
+    assert(!E.knownToUser(t, ev, M), '不看报：推演出的文章主角不知道');
+    const mt = t.ledger.find(e => e.layer === 'mentions');
+    if (mt) assert(!E.knownToUser(t, mt, { ...S, knowPublic: 'reads', clipDays: 0 }), '没有剪报服务，转载汇总也不知道');
+    const n0 = t.ledger.length;
+    const p = t.persons.find(x => x.id === ev.personId), w = t.works.find(x => x.id === ev.workId), o = t.outlets.find(x => x.id === ev.outletId);
+    const rep = B.applyBundle(t, B.normalizeBundle({ reactions: [{ date: ev.date, layer: ev.layer, person: p.name, work: w.title, outlet: o?.name, polarity: ev.polarity, summary: '聊天里提到的那篇' }] }), {});
+    assert.equal(t.ledger.length, n0, '没有另记一条');
+    assert(ev.seenAt && E.knownToUser(t, ev, M), '对上了，标为主角已读到');
+    assert(rep.lines.some(x => x.includes('就是推演里的那一篇')));
+    rollbackFrom(t, 5); E.advanceTo(t, '1890-09-01', S, null);
+    const again = t.ledger.find(e => e.key === ev.key);
+    assert(again && again.seenAt, '回滚重推后“已读到”还在');
+    ok('不看报的主角：推演出的文章不算知道；聊天里提到的会对上推演里的那篇并标读到（回滚重推也保留）');
+}
 console.log('回归测试全部通过');

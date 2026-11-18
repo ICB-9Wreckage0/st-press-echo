@@ -2,7 +2,7 @@
 
 import { uid, parseTags } from './util.js';
 import { normalizeISO } from './date.js';
-import { setStatus } from './engine.js';
+import { setStatus, matchSeenFromChat } from './engine.js';
 
 const norm = s => String(s || '').toLowerCase().replace(/[《》「」『』“”"'（）()\s·・.]/g, '');
 
@@ -115,6 +115,8 @@ export function applyProposal(state, prop) {
         if (!date) return `跳过：反响缺少有效日期（${d.summary || ''}）`;
         const work = findByName(state.works, d.work, 'title');
         const person = findByName(state.persons, d.person);
+        const seen = matchSeenFromChat(state, { layer: d.layer || 'notice', date, personId: person?.id || null, workId: work?.id || null, outletId: findByName(state.outlets, d.outletName)?.id || null, summary: d.summary });
+        if (seen) return `聊天里提到的 ${date} ${d.person || ''}就是推演里的那一篇：标为主角已读到`;
         const ev = {
             id: uid('ev'), key: null, origin: 'manual', date,
             layer: d.layer || 'notice',

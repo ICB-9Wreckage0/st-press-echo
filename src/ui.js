@@ -3,7 +3,7 @@
 import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON } from './util.js';
 import { weekdayZh, normalizeISO, yearOf, cmp, addDays, diffDays, pickStoryDate } from './date.js';
 import {
-    FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, knownToUser, repLabel, setStatus, rerollWork, advanceTo, byId, columnSlots,
+    FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, knownToUser, knownSince, repLabel, setStatus, rerollWork, advanceTo, byId, columnSlots,
     rerollPerson, READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, backfillBegin, backfillStep, backfillEnd, simulate, impressionAt, IMPRESSION_LABEL, seriesKey, READ_DONE } from './engine.js';
 import { buildEvidenceCard, cardText, generateOpinion, OPINION_DIMS, STYLE_CHECKLIST, RESPECT, FOLLOW, draftPersonProfile, draftWorkClaims } from './analysis.js';
 import {
@@ -183,6 +183,7 @@ const OUTLET_SPEC = [
     { key: 'issueDates', label: '已知出刊日期（不定期刊物）', type: 'tags', hint: '不定期刊物只在这些日子出刊，如 1890-05-03，1890-06-14。留空：每天都可能出，推演出的评论会标“请核对”，不自动入账' },
     { key: 'politics', label: '政治/宗教倾向', type: 'tags' },
     { key: 'circle', label: '所属圈子', type: 'select', options: CIRCLES, hint: '决定批准后的反响计入哪一类声誉' },
+    { key: 'userReads', label: '主角常读', type: 'checkbox', hint: '主角自己订阅或每天翻的报刊：上面登的文章当天就算主角读到。其余公开文章按“设置 · 主角知道什么”的规则（默认靠剪报，几天后才知道）' },
     { key: 'tier', label: '影响力（1–5）', type: 'number', hint: '影响读者来信数量' },
     { key: 'capacity', label: '每期版面（篇）', type: 'number', hint: '每期（日报按每周）最多登几篇与主角作品相关的稿件。留空：日报2、其余1' },
     { key: 'deadlineDays', label: '截稿提前天数', type: 'number', hint: '留空：日报1、周刊3、半月刊5、月刊8' },
@@ -215,6 +216,7 @@ const WORK_SPEC = [
     { key: 'outletId', label: '发表刊物', type: 'select', options: optsOf(s => s.outlets) },
     { key: 'pubDate', label: '发表日期', type: 'date', placeholder: 'YYYY-MM-DD' },
     { key: 'datePrecision', label: '发表日期的精度', type: 'select', options: { '': '精确到日', xun: '只知道旬（填该旬第一天）', month: '只知道月份（填该月 1 日）', noLaterThan: '只知道不晚于这一天' }, hint: '不精确时，推演在可能的范围内取一个确定的日子，不把它当成确切的首发日' },
+    { key: 'dateFrom', label: '最早可能的日期（只知道“不晚于”时）', placeholder: 'YYYY-MM-DD，可空', hint: '如：只知道交稿日和售罄日。填了就在这两天之间取；不填，往前最多 20 天' },
     { key: 'endDate', label: '连载结束日', type: 'date', placeholder: 'YYYY-MM-DD，可空' },
     { key: 'shelf', label: '发表后是否长期有人读', type: 'select', options: { '': '按形式（成书、单行本、小册子会）', yes: '会：书店、图书馆、沙龙里一直流通', no: '不会：过了发表期就没人再找' }, hint: '长期流通的作品，每个月都给还没碰过它的人一次机会；作者近期有话题作时机会更大' },
     { key: 'shelfUntil', label: '流通到', type: 'date', placeholder: '售罄或绝版日期，可空' },
@@ -822,7 +824,7 @@ function evCard(st, e, actions = '', { compact = false } = {}) {
           <span class="pe-card-date">${h(e.date)}</span><span class="pe-muted">${e.datePrecision ? { xun: '（只知道旬）', month: '（只知道月份）', noLaterThan: '（不晚于）' }[e.datePrecision] || '' : weekdayZh(e.date)}</span>
           <span class="pe-chip pe-chip-layer">${h(LAYERS[e.layer]?.label || e.layer)}</span>${pol}
           ${major && e.status === 'candidate' ? '<span class="pe-chip pe-chip-major">需确认</span>' : ''}
-          ${e.origin === 'manual' ? '<span class="pe-chip">手动</span>' : ''}${e.auto ? '<span class="pe-chip">自动入账</span>' : ''}${e.reactsTo ? '<span class="pe-chip">回应前文</span>' : ''}${e.epiLetterId ? '<span class="pe-chip">来自书信簿</span>' : ''}${e.backfill ? '<span class="pe-chip" title="回溯推演补出来的，原记录里没有">回溯</span>' : ''}${e.epiSent ? `<span class="pe-chip pe-chip-layer" title="已寄进书信簿">✉ ${h(e.epiSent.code || e.epiSent.id)}</span>` : ''}${e.status === 'approved' && !knownToUser(st, e) && (!st.currentDate || e.date <= st.currentDate) ? `<span class="pe-chip pe-chip-no" title="别人之间的私信：主角不知道内容，也不会注入主对话">主角不知道${e.to && e.to !== 'protagonist' ? '（寄给 ' + h(e.to) + '）' : ''}</span>` : ''}
+          ${e.origin === 'manual' ? '<span class="pe-chip">手动</span>' : ''}${e.auto ? '<span class="pe-chip">自动入账</span>' : ''}${e.reactsTo ? '<span class="pe-chip">回应前文</span>' : ''}${e.epiLetterId ? '<span class="pe-chip">来自书信簿</span>' : ''}${e.backfill ? '<span class="pe-chip" title="回溯推演补出来的，原记录里没有">回溯</span>' : ''}${e.epiSent ? `<span class="pe-chip pe-chip-layer" title="已寄进书信簿">✉ ${h(e.epiSent.code || e.epiSent.id)}</span>` : ''}${e.status === 'approved' && !knownToUser(st, e, getSettings()) && (!st.currentDate || e.date <= st.currentDate) ? (LAYERS[e.layer]?.public ? (ks => `<span class="pe-chip pe-chip-no" title="已经见报，但主角还没读到：不会注入主对话，NPC 也不会当作主角知道。可以在“设置 · 主角知道什么”里改规则，或点“主角已读到”">主角还没读到${ks ? '（约 ' + h(ks) + ' 经剪报得知）' : ''}</span>`)(knownSince(st, e, getSettings())) : `<span class="pe-chip pe-chip-no" title="别人之间的私信：主角不知道内容，也不会注入主对话">主角不知道${e.to && e.to !== 'protagonist' ? '（寄给 ' + h(e.to) + '）' : ''}</span>`) : ''}
         </div>
         <div class="pe-card-title">${whoText || '<span class="pe-muted">（未指定）</span>'}${work ? ` <span class="pe-muted">评</span> ${bt(work.title)} ${st.pennames.length > 1 ? penChip(st, work.pennameId) : ''}` : ''}</div>
         ${e.text?.title ? `<div class="pe-card-sub">「${h(e.text.title)}」${e.text.byline ? ` <span class="pe-muted">${h(e.text.byline)}</span>` : ''}</div>` : ''}
@@ -897,7 +899,7 @@ function ledger(st) {
           <button data-act="ev-summary" data-id="${e.id}">改概要</button>
           ${e.outletId && e.layer !== 'private_letter' ? `<button data-act="paper-open" data-id="${e.id}">在报纸版面上看</button>` : ''}
           <button data-act="ev-reply" data-id="${e.id}">安排一篇回应</button>
-          ${e.layer === 'private_letter' && !knownToUser(st, e) ? `<button data-act="ev-known" data-id="${e.id}" title="主角从某个渠道得知了这封信的内容">主角已得知</button>` : ''}
+          ${e.status === 'approved' && !knownToUser(st, e, getSettings()) ? `<button data-act="ev-known" data-id="${e.id}" title="${LAYERS[e.layer]?.public ? '主角读到了这篇文章（自己看报、别人拿给他、剪报送到……）' : '主角从某个渠道得知了这封信的内容'}">${LAYERS[e.layer]?.public ? '主角已读到' : '主角已得知'}</button>` : ''}
           ${e.layer === 'private_letter' && e.text?.body ? `<button data-act="epi-send" data-id="${e.id}">${e.epiSent ? '在书信簿里：' + h(e.epiSent.code || e.epiSent.id) : '寄进书信簿'}</button>` : ''}
           <button data-act="unapprove" data-id="${e.id}">撤回入账</button>
           <button data-act="ev-del" data-id="${e.id}">删除</button></details>`)).join('') || '<div class="pe-empty">还没有入账的反响。</div>'}`;
@@ -1549,6 +1551,7 @@ const SETTINGS_SPEC = [
     { key: 'loreBook', label: '世界书名称', placeholder: '报刊回声', hint: '没有就新建。只改动标题以【报刊回声】开头的条目' },
     { key: 'loreScope', label: '写进哪些人物', type: 'select', options: { involved: '读过作品、登记了立场或与主角相识的人', all: '人物表里的所有人' } },
     { key: 'loreWorks', label: '作品也写进去', type: 'checkbox', hint: '作品条目只写公开信息：署名、刊物、内容和已见报的反响' },
+    { key: 'loreMaxChars', label: '每个人物条目最多多少字', type: 'number', hint: '超出时先省略最早读过的作品。0 = 不限。中文约 1–1.5 字一个 token，1500 字大约 1000–1500 token' },
     { key: 'loreBindChat', label: '自动设为本聊天的世界书', type: 'checkbox', hint: '本聊天还没绑定世界书时，把它绑上；已经绑了别的世界书，就请你在酒馆里全局启用它' },
     { key: 'epiEnabled', label: '书信簿（st-epistolary）联动', type: 'checkbox', hint: '关掉后不读书信簿的日期、信件和文章稿，“导入与整理”页的书信簿部分也会收起' },
     { key: 'epiSyncDate', label: '书信簿推算出更晚的剧情日期时一并采用', type: 'checkbox' },
@@ -1557,10 +1560,13 @@ const SETTINGS_SPEC = [
     { key: 'headChars', label: '消息开头多少字内的日期优先', type: 'number' },
     { key: 'intensity', label: '公开发表意愿（0–1）', type: 'number', step: 0.05, hint: '默认 0.5。只影响“读了、有看法之后愿不愿意公开写”，接触和阅读不受影响' },
     { key: 'rumorHalfLife', label: '传闻半衰期（天）', type: 'number' },
+    { key: 'knowPublic', label: '公开见报的文章，主角怎么知道', type: 'select', options: { reads: '常读的当天，其余靠剪报', all: '见报当天就知道（旧）', marked: '只算我标了读到的' }, hint: '见报不等于主角读到。“常读”在刊物资料里勾；不看报的主角选“只算我标了读到的”。剧情里录入的、转到主角手上的读者来信不受影响；整理材料时聊天里提到了推演里的某篇文章，会自动标为读到；也可以在账本里点“主角已读到”' },
+    { key: 'clipDays', label: '剪报几天后送到', type: 'number', hint: '0 = 没有剪报服务：不常读的报刊上的文章（包括各报转载汇总），主角要等聊天里提到或你标记才知道' },
     { key: 'injectEnabled', label: '向主对话注入报刊现状', type: 'checkbox' },
     { key: 'injectPosition', label: '注入位置', type: 'select', options: { 0: '系统提示词内', 1: '聊天内（按深度）', 2: '最前面' }, numeric: true },
     { key: 'injectDepth', label: '注入深度', type: 'number' },
     { key: 'injectMaxItems', label: '注入最近几条反响', type: 'number' },
+    { key: 'injectMaxRumors', label: '注入几条传闻', type: 'number', hint: '按热度取前几条；0 = 不注入传闻' },
     { key: 'injectEraNotes', label: '注入时附带时代约束', type: 'checkbox' },
     { key: 'aiFill', label: '一键推演后让 AI 补完', type: 'select', options: { off: '不调用 AI，只推演', brief: '补写幕后（1 次）', opinions: '补写幕后 + 新读者的私下看法', all: '再加上给新入账的反响写稿' }, hint: '推演定下谁读了、态度如何；AI 再补写聊天里没写到、主角不知道的事。开始前会告诉你要调用几次' },
     { key: 'aiFillMax', label: '每次最多调用 AI', type: 'number', hint: '看法和写稿按重要程度排序，超出的留到下次或手动点' },
@@ -1588,23 +1594,24 @@ const SETTINGS_SPEC = [
 const SET_GROUPS = [
     { title: '基本', desc: '插件开关与审核方式', keys: ['enabled', 'autoApprove'] },
     { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvanceMode', 'autoAdvanceDays', 'maxJumpDays', 'headChars'] },
-    { title: '世界书', desc: '让主对话里的 NPC 知道自己读过什么、怎么看', keys: ['loreEnabled', 'loreAuto', 'loreBook', 'loreScope', 'loreWorks', 'loreBindChat'] },
+    { title: '世界书', desc: '让主对话里的 NPC 知道自己读过什么、怎么看', keys: ['loreEnabled', 'loreAuto', 'loreBook', 'loreScope', 'loreWorks', 'loreMaxChars', 'loreBindChat'] },
     { title: '书信簿联动', desc: '与 st-epistolary 书信簿插件配合', keys: ['epiEnabled', 'epiSyncDate', 'epiSendAuto'] },
     { title: '推演', desc: '只影响概率，不调用模型', keys: ['intensity', 'rumorHalfLife'], extra: 'layerMult' },
     { title: 'AI 补完', desc: '一键推演之后，让 AI 补写聊天里没写到、主角不知道的事', keys: ['aiFill', 'aiFillMax', 'aiFillOnAuto', 'autoFloorEvery', 'autoFloorDelay', 'aiSuggestPersons'] },
-    { title: '注入主对话', desc: '让角色“知道”报上登了什么', keys: ['injectEnabled', 'injectPosition', 'injectDepth', 'injectMaxItems', 'injectEraNotes', 'injectOffscreen'] },
+    { title: '主角知道什么', desc: '社会上已经见报，不等于主角读到了', keys: ['knowPublic', 'clipDays'] },
+    { title: '注入主对话', desc: '让角色“知道”报上登了什么', keys: ['injectEnabled', 'injectPosition', 'injectDepth', 'injectMaxItems', 'injectMaxRumors', 'injectEraNotes', 'injectOffscreen'] },
     { title: '写稿与模型', desc: '写书评正文、生成看法、整理材料、归类标签时用', keys: ['apiMode', 'apiUrl', 'apiKey', 'apiModel', 'temperature', 'maxTokens', 'outputLanguage', 'realPersonPolicy'], extra: 'apiTest' },
     { title: '年代资料', desc: '生成年代档案时检索的资料', keys: ['eraRefresh', 'eraRefreshMode', 'wikiEnabled', 'wikiLangs'] },
 ];
 // 只在某个选项打开时才显示的设置
 const SET_DEPS = {
     injectPosition: s => s.injectEnabled, injectDepth: s => s.injectEnabled && Number(s.injectPosition) === 1,
-    injectMaxItems: s => s.injectEnabled, injectEraNotes: s => s.injectEnabled,
+    injectMaxItems: s => s.injectEnabled, injectMaxRumors: s => s.injectEnabled, injectEraNotes: s => s.injectEnabled,
     apiUrl: s => s.apiMode === 'custom', apiKey: s => s.apiMode === 'custom', apiModel: s => s.apiMode === 'custom',
     wikiLangs: s => s.wikiEnabled, autoAdvanceMode: s => s.autoDetectDate, autoAdvanceDays: s => s.autoDetectDate && advanceMode(s) === 'interval',
     epiSyncDate: s => s.epiEnabled !== false, eraRefreshMode: s => s.eraRefresh && s.eraRefresh !== 'off', epiSendAuto: s => s.epiEnabled !== false,
-    autoFloorDelay: s => Number(s.autoFloorEvery) > 0,
-    loreAuto: s => s.loreEnabled, loreBook: s => s.loreEnabled, loreScope: s => s.loreEnabled, loreWorks: s => s.loreEnabled, loreBindChat: s => s.loreEnabled,
+    autoFloorDelay: s => Number(s.autoFloorEvery) > 0, clipDays: s => (s.knowPublic || 'reads') === 'reads',
+    loreAuto: s => s.loreEnabled, loreBook: s => s.loreEnabled, loreScope: s => s.loreEnabled, loreWorks: s => s.loreEnabled, loreMaxChars: s => s.loreEnabled, loreBindChat: s => s.loreEnabled,
     aiFillMax: s => s.aiFill && s.aiFill !== 'off', aiFillOnAuto: s => s.aiFill && s.aiFill !== 'off', aiSuggestPersons: s => s.aiFill && s.aiFill !== 'off', injectOffscreen: s => s.injectEnabled,
 };
 
@@ -2483,10 +2490,12 @@ async function onClick(e) {
 
         case 'ev-known': {
             if (!ev) break;
-            const d = normalizeISO(prompt('主角哪天得知这封信的内容？（YYYY-MM-DD）', st.currentDate || ev.date) || '');
+            const pub = !!LAYERS[ev.layer]?.public;
+            const d = normalizeISO(prompt(pub ? '主角哪天读到这篇文章？（YYYY-MM-DD）' : '主角哪天得知这封信的内容？（YYYY-MM-DD）', st.currentDate || ev.date) || '');
             if (!d) break;
-            ev.knownAt = d;
-            commit(`主角从 ${d} 起知道这封信`);
+            if (cmp(d, ev.date) < 0) return toast('warning', '不能早于见报或寄出的日期');
+            if (pub) ev.seenAt = d; else ev.knownAt = d;
+            commit(pub ? `主角从 ${d} 起读到这篇` : `主角从 ${d} 起知道这封信`);
             break;
         }
         case 'epi-send': {
@@ -2888,8 +2897,8 @@ function bundleItemAction(act, st, btn) {
 // ———————————— 一键推演（按钮和“每 N 楼”共用） ————————————
 let simRunning = false;
 export async function runSimNow(st, s, { auto = false, reason = '', until = null, rebaseFrom = null, chatSkip = 0 } = {}) {
-    if (simRunning) { if (!auto) toast('info', '上一次推演还在进行，详情见控制台'); return; }
-    if (st.backfillRun) { clog('warn', '回溯推演进行中，跳过自动推演'); return; }
+    if (simRunning) { if (!auto) toast('info', '上一次推演还在进行，详情见控制台'); return false; }
+    if (st.backfillRun) { clog('warn', '回溯推演进行中，跳过自动推演'); return false; }
     simRunning = true;
     pushUndo(st, auto ? `自动推演${reason ? '（' + reason + '）' : ''}` : '一键推演');
     const sigOf = () => [st.ledger.length, (st.receptions || []).length, (st.offscreen || []).length, (st.rumors || []).length, st.currentDate, (st.ledger || []).filter(e => e.text?.body).length, (st.receptions || []).filter(r => r.opinion).length].join('|');

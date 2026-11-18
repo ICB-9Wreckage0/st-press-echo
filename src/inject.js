@@ -29,7 +29,7 @@ export function buildInjection(state, era, settings) {
         if (parts.length) L.push(`署名“${pen.name}”的名声：${parts.join('，')}${pen.publicIdentityKnown ? '' : '（公众不知其真实身份）'}`);
     }
 
-    const known = (state.ledger || []).filter(e => knownToUser(state, e));
+    const known = (state.ledger || []).filter(e => knownToUser(state, e, settings));
     const recent = known.slice(-(settings.injectMaxItems || 12));
     if (recent.length) {
         L.push(`主角已知的反响（共 ${known.length} 条，列出最近 ${recent.length} 条）：`);
@@ -46,7 +46,7 @@ export function buildInjection(state, era, settings) {
         }
     }
 
-    const rumors = (state.rumors || []).filter(r => r.strength >= 0.25);
+    const rumors = (state.rumors || []).filter(r => r.strength >= 0.25).sort((a, b) => b.strength - a.strength).slice(0, Math.max(0, settings.injectMaxRumors ?? 5));
     if (rumors.length) {
         L.push('坊间传闻：');
         for (const r of rumors) L.push(`- ${r.text}（热度 ${Math.round(r.strength * 100)}%）`);
@@ -55,7 +55,7 @@ export function buildInjection(state, era, settings) {
     const os = offscreenLines(state, settings.injectOffscreen, 8);
     if (os.length) { L.push(settings.injectOffscreen === 'all' ? '幕后（文学界在主角看不到处发生的事）：' : '主角听说的文坛动静：'); L.push(...os); }
 
-    L.push('规则：以上列表之外的书评、报道、私信视为尚不存在，正文不得自行编造新的评论或评论者；主角只能知道已见报或寄给他本人的内容；尚在排期中的文章对任何角色都不可见。');
+    L.push('规则：正文不得自行编造列表之外（及世界书之外）的书评、报道、私信或评论者；主角只知道上面列出的和寄给他本人的内容——见报不等于他读到了，别人可以提起他没读过的文章，但他不能凭空知道内容；尚在排期中的文章对任何角色都不可见。');
     return L.join('\n');
 }
 

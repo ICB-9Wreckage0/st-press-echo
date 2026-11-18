@@ -6,7 +6,7 @@ import { pickStoryDate, yearOf, weekdayZh, WEEKDAY_ZH } from './src/date.js';
 import { applyInjection } from './src/inject.js';
 import { guessPlace } from './src/era.js';
 import { mountUI, refresh, togglePanel, getEra, doAdvance, syncEraYear, aiFill, runSimNow } from './src/ui.js';
-import { takeSnapshot, rollbackFrom, snapshotFor } from './src/rollback.js';
+import { takeSnapshot, rollbackFrom, snapshotFor, textSig, sigSim } from './src/rollback.js';
 import { epistolaryStoryDate } from './src/epistolary.js';
 import { noteMainGeneration } from './src/llm.js';
 import { diffDays, cmp } from './src/date.js';
@@ -62,7 +62,7 @@ function detectFromChat(manual = false, messageId = null) {
     }
     const prevYear = st.currentDate ? yearOf(st.currentDate) : null;
 
-    if (messageId != null) takeSnapshot(st, messageId, pick.iso);
+    if (messageId != null) takeSnapshot(st, messageId, pick.iso, c.chat[messageId]?.mes ?? null);
     if (messageId != null) { st.dateLog = (st.dateLog || []).filter(x => x.mesId !== messageId); st.dateLog.push({ mesId: messageId, date: pick.iso }); }
     if (!st.currentDate) {
         st.currentDate = pick.iso;
@@ -115,7 +115,10 @@ function onRollback(mesId, reason, redetect) {
         const m = ctx()?.chat?.[mesId];
         if (snap && m?.mes) {
             const pick = pickStoryDate(m.mes, snap.currentDate, { maxJumpDays: getSettings().maxJumpDays, headChars: getSettings().headChars });
-            if (pick?.iso === snap.toDate) return;
+            // 日期没变，还要看正文变了多少：改几个错字不动；内容大改（同一天、事情不一样了）照样回滚重推
+            const sim = sigSim(snap.sig, textSig(m.mes));
+            if (pick?.iso === snap.toDate && (sim == null || sim >= 0.6)) return;
+            if (pick?.iso === snap.toDate) reason += '（同一天，但内容大改）';
         }
     }
     if (st.dateLog) st.dateLog = st.dateLog.filter(x => x.mesId < mesId);
@@ -177,11 +180,13 @@ function floorTrigger() {
     if (!st || !s.enabled || n <= 0 || !st.currentDate) return;
     if (st.floorMark == null || eff < st.floorMark) { st.floorMark = eff; saveState(); return; } // 第一次，或删了楼
     if (eff - st.floorMark < n) return;
+    const prevMark = st.floorMark;
     st.floorMark = eff;
     saveState();
     const until = delay ? dateBefore(st, eff) : null;
     runSimNow(st, s, { auto: true, reason: `又聊了 ${n} 楼，按第 ${eff} 楼之前的剧情${delay ? `，延迟 ${delay} 楼` : ''}`, until, rebaseFrom: delay ? eff : null, chatSkip: delay })
-        .catch(e => console.warn(TAG, '自动推演失败', e));
+        .then(r => { if (r === false) { st.floorMark = prevMark; saveState(); } })
+        .catch(e => { st.floorMark = prevMark; saveState(); console.warn(TAG, '自动推演失败，下一楼再试', e); });
 }
 
 async function init() {

@@ -10,7 +10,7 @@ import { normalizeISO, cmp } from './date.js';
 import { extractJSON, uid } from './util.js';
 import { callLLM } from './llm.js';
 import { clog } from './console.js';
-import { FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, REL_TYPES, REL_FREQ, setStatus, recordManualReading, recomputeReputation, normSide, normStrength } from './engine.js';
+import { FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, REL_TYPES, REL_FREQ, setStatus, matchSeenFromChat, recordManualReading, recomputeReputation, normSide, normStrength } from './engine.js';
 
 // 以对象为元素的列表按关键字段合并：同一议题/同一文体项目，新的覆盖旧的
 const KEYED = { stances: 'issue', stylePrefs: 'aspect', claims: 'issue' };
@@ -41,7 +41,7 @@ export const FORMAT_SPEC = `{
       "stances": [{ "issue": "议题（短名词，如 死刑）", "side": "con", "strength": 3, "note": "具体立场", "source": "依据" }],
       "stylePrefs": [{ "aspect": "文体项目（如 解释密度）", "leaning": "倾向一句话", "tolerance": 2, "source": "依据" }],
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
-  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day", "shelf": "", "shelfUntil": "",
+  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day", "dateFrom": "只知道“不晚于”时，最早可能的日期（可空）", "shelf": "", "shelfUntil": "",
       "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
   "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "to": "私信的收信人：寄给主角的留空或写“主角”，别人之间的信写收信人", "knownAt": "主角哪天得知这封别人之间的信（不知道就空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
@@ -203,7 +203,7 @@ export function normalizeBundle(obj) {
         works: arr(b.works).map(w => (typeof w === 'string' ? { title: w } : w)).filter(w => str(w.title || w.name)).map(w => ({
             title: bare(w.title || w.name), aliases: arr(w.aliases).map(bare).filter(a => a && a !== bare(w.title || w.name)), penname: str(w.penname),
             form: enumKey(FORMS, w.form, ''), outlet: bare(w.outlet || w.outletName),
-            pubDate: date(w.pubDate), endDate: date(w.endDate), datePrecision: precKey(w.datePrecision), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: bare(w.versionOf),
+            pubDate: date(w.pubDate), endDate: date(w.endDate), datePrecision: precKey(w.datePrecision), dateFrom: date(w.dateFrom), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: bare(w.versionOf),
             shelf: w.shelf === true || w.shelf === 'yes' ? 'yes' : w.shelf === false || w.shelf === 'no' ? 'no' : '', shelfUntil: date(w.shelfUntil),
             claims: arr(w.claims).filter(x => x && str(x.issue)).map(x => ({ issue: str(x.issue), side: normSide(x.side), note: str(x.note), where: str(x.where) })),
         })),
@@ -440,7 +440,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
             const pen = w.penname ? (findByName(state.pennames, w.penname) || (() => { const p = { ...blankPenname(), name: w.penname }; state.pennames.push(p); report.created.push(`笔名“${w.penname}”`); return p; })()) : null;
             const data = {
                 aliases: w.aliases, form: w.form, outletId: ensureOutlet(state, w.outlet, report), pubDate: w.pubDate, endDate: w.endDate,
-                themes: w.themes, summary: w.summary, pennameId: pen?.id || '', datePrecision: w.datePrecision, shelf: w.shelf, shelfUntil: w.shelfUntil,
+                themes: w.themes, summary: w.summary, pennameId: pen?.id || '', datePrecision: w.datePrecision, dateFrom: w.dateFrom, shelf: w.shelf, shelfUntil: w.shelfUntil,
             };
             if (!ex) { ex = { ...blankWork(), title: w.title, pennameId: state.pennames[0]?.id || '' }; state.works.push(ex); }
             fill(ex, data, sync);
@@ -506,6 +506,8 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
         const dup = state.ledger.some(e => e.origin === 'manual' && e.date === r.date && e.layer === r.layer && (e.personId || null) === (person?.id || null)
             && (e.workId || null) === (work?.id || null) && (e.outletId || null) === outletId && (e.text?.title || '') === r.title && e.polarity === r.polarity);
         if (dup) { report.skipped.push(`已存在：${r.date} ${r.person}`); continue; }
+        const seen = matchSeenFromChat(state, { layer: r.layer, date: r.date, personId: person?.id || null, workId: work?.id || null, outletId, summary: r.summary });
+        if (seen) { r.matchedEngine = seen.id; report.lines.push(`聊天里提到的 ${r.date} ${r.person || ''}${r.work ? '《' + r.work + '》' : ''}，就是推演里的那一篇：标为主角已读到（${seen.seenAt}）`); continue; }
         const ev = {
             id: uid('ev'), key: null, origin: 'manual', date: r.date, layer: r.layer,
             personId: person?.id || null, personName: person ? undefined : (r.person || undefined),
@@ -524,7 +526,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
     const inferred = [];
     if (on('readings') && on('reactions')) {
         for (const r of b.reactions) {
-            if (!r.person || !r.work || ['reader_letters', 'mentions'].includes(r.layer)) continue;
+            if (!r.person || !r.work || ['reader_letters', 'mentions'].includes(r.layer) || r.matchedEngine) continue; // 对上推演事件的：推演里已经有他的阅读记录
             const has = b.readings.some(x => sameName(x.person, r.person) && sameName(x.work, r.work))
                 || inferred.some(x => sameName(x.person, r.person) && sameName(x.work, r.work));
             if (!has) inferred.push({ date: r.date, person: r.person, work: r.work, read: 'unknown', note: `由${LAYERS[r.layer]?.label || '反响'}推断接触过（${r.date}），读了多少不详`, known: { polarity: r.polarity, source: LAYERS[r.layer]?.label } });
