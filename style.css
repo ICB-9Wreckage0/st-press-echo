@@ -839,3 +839,8 @@ span.pe-pol:not(.pe-chip) { font-size: .9em; padding: 0 4px; border: 1px solid; 
 .pe-rep-table .pe-repbtn { display: flex !important; flex-direction: column; align-items: center; gap: 1px; width: 100%; box-sizing: border-box; white-space: normal; }
 .pe-rep-table .pe-rep > div, .pe-rep-table .pe-rep > small { display: block !important; }
 .pe-rep-table td { overflow: hidden; }
+/* 不透明度：主题背景色下面垫一层深色底，--pe-opa 由设置里的滑块控制（0 = 只用主题色） */
+#pe-panel { background: linear-gradient(var(--pe-bg), var(--pe-bg)), rgba(23, 23, 27, var(--pe-opa, .9)); }
+.pe-range { display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+.pe-range input[type=range] { width: 14em; accent-color: var(--pe-accent); }
+.pe-range output { min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; }

@@ -112,7 +112,7 @@ function readForm(root, spec) {
         if (!el) continue;
         if (f.type === 'checkbox') out[f.key] = el.checked;
         else if (f.type === 'tags') out[f.key] = f.numeric ? parseTags(el.value).map(Number).filter(n => !isNaN(n)) : parseTags(el.value);
-        else if (f.type === 'number') out[f.key] = el.value === '' ? null : Number(el.value);
+        else if (f.type === 'number' || f.type === 'range') out[f.key] = el.value === '' ? null : Number(el.value);
         else if (f.type === 'date') out[f.key] = normalizeISO(el.value) || '';
         else if (f.type === 'select' && f.numeric) out[f.key] = el.value === '' ? null : Number(el.value);
         else out[f.key] = el.value;
@@ -281,6 +281,13 @@ export function mountUI(appApi) {
     bindConsole(panel);
     bindTips(panel);
     panel.addEventListener('change', onChange);
+    // 拖动不透明度滑块：立刻生效，数字跟着变（松手时 change 事件照常保存）
+    panel.addEventListener('input', e => {
+        const t = e.target;
+        if (t.type !== 'range' || t.dataset?.k !== 'panelOpacity') return;
+        const out = t.parentElement.querySelector('output'); if (out) out.textContent = t.value + '%';
+        applyPanelOpacity({ panelOpacity: Number(t.value) });
+    });
     panel.addEventListener('input', e => { if (e.target.id === 'pe-find') { findQ[tab] = e.target.value; applyFind(); } });
     panel.addEventListener('keydown', e => { if (e.target.id === 'pe-find' && e.key === 'Escape') { e.stopPropagation(); findQ[tab] = ''; e.target.value = ''; applyFind(); } });
     // 记住阅读记录里哪些作品是展开的（搜索时自动展开的不算）
@@ -467,6 +474,7 @@ export function refresh() {
     const st = getState();
     const s = getSettings();
     const pending = st ? st.ledger.filter(e => e.status === 'candidate').length : 0;
+    applyPanelOpacity(s);
     const nav = document.querySelector('#pe-panel .pe-tabs');
     if (nav) nav.innerHTML = TABS.map(([k, v]) => `<button data-tab="${k}" class="${k === tab ? 'active' : ''}">${v}${k === 'queue' && pending ? ` <span class="pe-count">${pending}</span>` : ''}</button>`).join('');
     const hd = document.getElementById('pe-head-date');
@@ -1571,6 +1579,7 @@ const SETTINGS_SPEC = [
     { key: 'rumorHalfLife', label: '传闻半衰期（天）', type: 'number' },
     { key: 'knowPublic', label: '公开见报的文章，主角怎么知道', type: 'select', options: { reads: '常读的当天，其余靠剪报', all: '见报当天就知道（旧）', marked: '只算我标了读到的' }, hint: '见报不等于主角读到。“常读”在刊物资料里勾；不看报的主角选“只算我标了读到的”。剧情里录入的、转到主角手上的读者来信不受影响；整理材料时聊天里提到了推演里的某篇文章，会自动标为读到；也可以在账本里点“主角已读到”' },
     { key: 'clipDays', label: '剪报几天后送到', type: 'number', hint: '0 = 没有剪报服务：不常读的报刊上的文章（包括各报转载汇总），主角要等聊天里提到或你标记才知道' },
+    { key: 'panelOpacity', label: '面板不透明度', type: 'range', min: 0, max: 100, step: 5, unit: '%', hint: '拖动时立刻生效。100% 完全挡住后面的聊天文字；0% 完全跟随酒馆主题（主题半透明时会透出后面的字）' },
     { key: 'injectEnabled', label: '向主对话注入报刊现状', type: 'checkbox' },
     { key: 'injectPosition', label: '注入位置', type: 'select', options: { 0: '系统提示词内', 1: '聊天内（按深度）', 2: '最前面' }, numeric: true },
     { key: 'injectDepth', label: '注入深度', type: 'number' },
@@ -1601,7 +1610,7 @@ const SETTINGS_SPEC = [
 // ———— 设置页：分组、左说明右控件、改了就保存 ————
 
 const SET_GROUPS = [
-    { title: '基本', desc: '插件开关与审核方式', keys: ['enabled', 'autoApprove'] },
+    { title: '基本', desc: '插件开关、审核方式与面板外观', keys: ['enabled', 'autoApprove', 'panelOpacity'] },
     { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvanceMode', 'autoAdvanceDays', 'maxJumpDays', 'headChars'] },
     { title: '世界书', desc: '让主对话里的 NPC 知道自己读过什么、怎么看', keys: ['loreEnabled', 'loreAuto', 'loreBook', 'loreScope', 'loreWorks', 'loreMaxChars', 'loreBindChat'] },
     { title: '书信簿联动', desc: '与 st-epistolary 书信簿插件配合', keys: ['epiEnabled', 'epiSyncDate', 'epiSendAuto'] },
@@ -1624,12 +1633,18 @@ const SET_DEPS = {
     aiFillMax: s => s.aiFill && s.aiFill !== 'off', aiFillOnAuto: s => s.aiFill && s.aiFill !== 'off', aiSuggestPersons: s => s.aiFill && s.aiFill !== 'off', injectOffscreen: s => s.injectEnabled,
 };
 
+/** 面板不透明度：在主题背景色下面垫一层深色底，0 = 只用主题色 */
+export function applyPanelOpacity(s = getSettings()) {
+    const v = s.panelOpacity ?? (s.panelBg === 'theme' ? 0 : 90);
+    document.getElementById('pe-panel')?.style.setProperty('--pe-opa', String(Math.max(0, Math.min(100, Number(v) || 0)) / 100));
+}
 function setControl(f, val) {
     const opts = typeof f.options === 'function' ? f.options() : f.options;
     switch (f.type) {
     case 'checkbox': return `<label class="pe-switch"><input type="checkbox" data-k="${f.key}" ${val ? 'checked' : ''}><span></span></label>`;
     case 'select': return `<select class="text_pole" data-k="${f.key}">${Object.entries(opts).map(([k, v]) => `<option value="${h(k)}" ${String(val) === String(k) ? 'selected' : ''}>${h(v)}</option>`).join('')}</select>`;
     case 'number': return `<input class="text_pole pe-num-in" type="number" step="${f.step ?? 1}" data-k="${f.key}" data-num="1" value="${h(val ?? '')}">`;
+    case 'range': { const v = val ?? f.max; return `<div class="pe-range"><input type="range" min="${f.min ?? 0}" max="${f.max ?? 100}" step="${f.step ?? 1}" data-k="${f.key}" value="${h(v)}"><output>${h(v)}${f.unit || ''}</output></div>`; }
     // 不用 type=password：浏览器会把保存的登录密码自动填进来（还会把用户名填进上一个输入框）
     case 'password': return `<div class="pe-secret-wrap"><input class="text_pole pe-secret" type="text" data-k="${f.key}" value="${h(val ?? '')}" autocomplete="off" data-lpignore="true" data-1p-ignore data-bwignore spellcheck="false" placeholder="粘贴密钥"><button class="pe-mini" data-act="secret-toggle" title="显示/隐藏">显示</button></div>`;
     default:

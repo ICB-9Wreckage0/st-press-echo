@@ -34,6 +34,7 @@ export const DEFAULT_SETTINGS = {
     injectDepth: 4,
     injectMaxItems: 12,
     injectMaxRumors: 5,
+    panelOpacity: 90,
     knowPublic: 'reads',
     clipDays: 3,
     loreMaxChars: 1500,

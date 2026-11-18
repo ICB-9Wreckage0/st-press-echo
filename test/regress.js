@@ -539,4 +539,25 @@ function base(seed = 'reg') {
     assert.equal(E.repOrphans(t3).length, 1); E.fixRepOrphans(t3); assert.equal(E.repOrphans(t3).length, 0);
     ok('名声拆成知名度与评价：批评也让人知道、读者来信按封数递增、好评取平均不累加；署名对不上的能查出并修复');
 }
+// 27. 同一份整理包导入两次：阅读记录不重复、不多出推演事件；你手动录的阅读记录保留
+{
+    const t = base('ri'); t.currentDate = '1890-09-01';
+    const P = t.persons[0], W = t.works[0];
+    const pack = { readings: [{ person: P.name, work: W.title, date: '1890-06-01', read: 'finished' }], reactions: [] };
+    B.applyBundle(t, B.normalizeBundle(pack), {});
+    const n1 = t.receptions.length, l1 = t.ledger.length;
+    const rep = B.applyBundle(t, B.normalizeBundle(pack), {});
+    assert.equal(t.receptions.length, n1, '阅读记录不重复'); assert.equal(t.ledger.length, l1, '不多出推演事件');
+    assert(rep.lines.some(x => x.includes('已存在')));
+    assert(B.previewBundle(t, B.normalizeBundle(pack)).items.readings[0].exists, '预览也标“已存在”');
+    // 新版改了日期：替换旧的整理包记录
+    B.applyBundle(t, B.normalizeBundle({ readings: [{ ...pack.readings[0], date: '1890-06-05' }], reactions: [] }), {});
+    assert.equal(t.receptions.filter(r => r.personId === P.id && r.workId === W.id).length, 1);
+    assert.equal(t.receptions.find(r => r.personId === P.id && r.workId === W.id).readDate, '1890-06-05');
+    // 手动录的不被整理包覆盖
+    const mine = t.receptions.find(r => r.personId === P.id && r.workId === W.id); mine.fromBundle = false;
+    const rep3 = B.applyBundle(t, B.normalizeBundle({ readings: [{ ...pack.readings[0], date: '1890-07-01' }], reactions: [] }), {});
+    assert.equal(mine.readDate, '1890-06-05'); assert(rep3.skipped.some(x => x.includes('保留你的')));
+    ok('同一份整理包导入两次不重复；新版改了日期会替换旧的整理包记录；你手动录的保留');
+}
 console.log('回归测试全部通过');

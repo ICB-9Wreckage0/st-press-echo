@@ -312,10 +312,11 @@ export function previewBundle(state, b) {
         && (state.outlets.find(o => o.id === e.outletId)?.name || '') === (findByName(state.outlets, r.outlet)?.name || ''));
     pv.items.reactions = b.reactions.map(r => ({ name: `${r.date} ${LAYERS[r.layer]?.label || r.layer} ${r.person || r.outlet || ''}${r.work ? ' 评《' + r.work + '》' : ''}`, exists: dup(r) }));
     pv.counts.reactions = { new: pv.items.reactions.filter(x => !x.exists).length, update: pv.items.reactions.filter(x => x.exists).length };
-    pv.items.readings = b.readings.map(r => ({ name: `${r.date} ${r.person} 读《${r.work}》`, exists: false }));
-    pv.counts.readings = { new: b.readings.length, update: 0 };
-    pv.counts.rumors = { new: b.rumors.length, update: 0 };
-    pv.counts.eraNotes = { new: b.eraNotes.length, update: 0 };
+    const hasRead = r => { const w = findWork(state, r.work), p = findPerson(state, r.person); return !!(w && p && (state.receptions || []).some(x => x.origin === 'manual' && x.workId === w.id && x.personId === p.id)); };
+    pv.items.readings = b.readings.map(r => ({ name: `${r.date} ${r.person} 读《${r.work}》`, exists: hasRead(r) }));
+    pv.counts.readings = { new: pv.items.readings.filter(x => !x.exists).length, update: pv.items.readings.filter(x => x.exists).length };
+    pv.counts.rumors = { new: b.rumors.filter(r => !(state.rumors || []).some(x => sameName(x.text, r.text))).length, update: b.rumors.filter(r => (state.rumors || []).some(x => sameName(x.text, r.text))).length };
+    pv.counts.eraNotes = { new: b.eraNotes.filter(n => !(state.eraNotes || []).some(x => sameName(x.text, n.text))).length, update: b.eraNotes.filter(n => (state.eraNotes || []).some(x => sameName(x.text, n.text))).length };
     pv.items.privateFacts = (b.privateFacts || []).map(f => ({ name: `${f.text}${f.knownBy?.length ? '（知情：' + f.knownBy.map(k => k.person).join('、') + '）' : ''}`, exists: (state.privateFacts || []).some(x => String(x.text).replace(/\s/g, '') === String(f.text).replace(/\s/g, '')) }));
     pv.counts.privateFacts = { new: pv.items.privateFacts.filter(x => !x.exists).length, update: pv.items.privateFacts.filter(x => x.exists).length };
     const nz = t => String(t || '').replace(/[\s，。、；：“”（）,.;:]/g, '');
@@ -545,6 +546,8 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
                 || inferred.some(x => sameName(x.person, r.person) && sameName(x.work, r.work));
             if (!has) inferred.push({ date: r.date, person: r.person, work: r.work, read: 'unknown', note: `由${LAYERS[r.layer]?.label || '反响'}推断接触过（${r.date}），读了多少不详`, known: { polarity: r.polarity, source: LAYERS[r.layer]?.label } });
         }
+        // 已经有阅读记录的不用再推断
+        for (let i = inferred.length - 1; i >= 0; i--) { const x = inferred[i]; const w = findWork(state, x.work), p = findPerson(state, x.person); if (w && p && (state.receptions || []).some(y => y.workId === w.id && y.personId === p.id && y.origin === 'manual')) inferred.splice(i, 1); }
         if (inferred.length) report.lines.push(`由署名反响补了 ${inferred.length} 条阅读记录：${inferred.map(x => `${x.person}读${x.work}`).join('、')}`);
     }
     if (on('readings')) for (const r of [...b.readings, ...inferred]) {
@@ -556,6 +559,17 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
         const hist = state.currentDate ? { ...settings, publicBefore: state.currentDate, privateBefore: state.currentDate } : settings;
         // 同一部作品若他也有署名反响，用反响的态度
         const kn = r.known || (() => { const x = b.reactions.find(y => y.person && sameName(y.person, r.person) && sameName(y.work, r.work) && !['reader_letters', 'mentions'].includes(y.layer)); return x ? { polarity: x.polarity, source: LAYERS[x.layer]?.label } : null; })();
+        // 已有同一人同一作品的手动阅读记录：一样就跳过；以前整理包导入的，按新版替换；你自己录的，保留你的
+        const prev = (state.receptions || []).filter(x => x.origin === 'manual' && x.workId === work.id && x.personId === person.id);
+        if (prev.some(x => x.readDate === normalizeISO(r.date) && (x.read === r.read || !r.read))) { report.dupReadings = (report.dupReadings || 0) + 1; continue; }
+        const mine = prev.filter(x => !x.fromBundle);
+        if (mine.length) { report.skipped.push(`阅读：${r.person} 读《${r.work}》——你手动录过（${mine[0].readDate}），保留你的`); continue; }
+        if (prev.length) {
+            const drop = new Set(prev.flatMap(x => x.eventIds || []));
+            state.ledger = state.ledger.filter(e => !(drop.has(e.id) && e.status !== 'approved'));
+            state.receptions = state.receptions.filter(x => !prev.includes(x));
+            report.lines.push(`阅读：${r.person} 读《${r.work}》按新版整理包更新（${prev[0].readDate} → ${r.date}）`);
+        }
         try { const rc = recordManualReading(state, hist, era, { workId: work.id, personId: person.id, date: r.date, read: r.read, note: r.note || '整理包', known: kn }); rc.fromBundle = true; } catch (e) { report.skipped.push(`阅读：${e.message}`); }
     }
     if (on('rumors')) for (const r of b.rumors) {
@@ -566,6 +580,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
         if (state.eraNotes.some(x => sameName(x.text, n.text))) continue;
         state.eraNotes.push({ title: n.title, text: n.text });
     }
+    if (report.dupReadings) report.lines.push(`阅读记录 ${report.dupReadings} 条已存在，跳过`);
     state.ledger.sort((a, b2) => cmp(a.date, b2.date));
     recomputeReputation(state);
     return report;
