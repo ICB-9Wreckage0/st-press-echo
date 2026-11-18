@@ -5,7 +5,7 @@ import { getSettings, getState, saveState, logLine } from './src/store.js';
 import { pickStoryDate, yearOf, weekdayZh, WEEKDAY_ZH } from './src/date.js';
 import { applyInjection } from './src/inject.js';
 import { guessPlace } from './src/era.js';
-import { mountUI, refresh, togglePanel, getEra, doAdvance, syncEraYear } from './src/ui.js';
+import { mountUI, refresh, togglePanel, getEra, doAdvance, syncEraYear, aiFill } from './src/ui.js';
 import { takeSnapshot, rollbackFrom, snapshotFor } from './src/rollback.js';
 import { epistolaryStoryDate } from './src/epistolary.js';
 import { diffDays, cmp } from './src/date.js';
@@ -60,7 +60,13 @@ function detectFromChat(manual = false, messageId = null) {
         logLine(st, `从消息识别到起始日期 ${pick.iso}`);
         saveState();
     } else if (s.autoAdvance || manual) {
+        const from = st.currentDate;
+        const before = new Set((st.receptions || []).map(r => r.id));
         doAdvance(st, s, pick.iso);
+        if (!manual && s.aiFillOnAuto && s.aiFill && s.aiFill !== 'off') {
+            const fresh = new Set((st.receptions || []).filter(r => !before.has(r.id)).map(r => r.id));
+            aiFill(st, s, { from, to: pick.iso, fresh, auto: true }).catch(e => console.warn('[报刊回声] AI 补完失败', e));
+        }
     } else {
         st.detectedDate = pick.iso;
         saveState();

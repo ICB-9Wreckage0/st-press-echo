@@ -198,7 +198,7 @@ ${PROFILE_SCHEMA}`;
 ${srcText ? '参考资料（已剪掉当前日期之后的条目，但仍可能有遗漏，请再自行把关）：\n' + srcText : '（没有可用的检索资料，请仅凭历史知识保守编写）'}
 
 ${noteText ? '用户收集的笔记：\n' + noteText : ''}`;
-    const raw = await callLLM({ system, user, settings, maxTokens: 3500 });
+    const raw = await callLLM({ system, user, settings, maxTokens: 3500, label: `生成 ${currentIso || year} 年代档案` });
     const profile = extractJSON(raw);
     profile.year = profile.year || year;
     profile.asOf = currentIso;

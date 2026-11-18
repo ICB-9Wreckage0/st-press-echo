@@ -336,3 +336,58 @@ console.log('以新版为准替换标签和关系 ✓');
   assert.equal(op.styleNotes.length, 1); assert.equal(op.disagreements[0].key, true);
   console.log('v0.9 立场与证据 ✓', { pos, neg });
 }
+
+// —— 长尾与话题带动 ——
+{
+  const E2 = await import('../src/engine.js');
+  const { addDays: ad } = await import('../src/date.js');
+  const mk = (buzz, seed) => {
+    const t = defaultState(); t.seed = seed;
+    t.pennames = [{ id: 'pen', name: 'E.E.', knownBy: [] }];
+    t.outlets = [{ id: 'o', name: '某报', periodicity: 'daily', circle: 'general', tier: 2 }];
+    t.persons = Array.from({ length: 12 }, (_, i) => ({ id: 'p' + i, name: '读者' + i, roles: [], outletIds: [], reads: ['zz'], interests: ['宗教'], likes: [], dislikes: [], closeness: 0, active: true }));
+    t.works = [{ id: 'bk', title: '旧书', pennameId: 'pen', form: 'book', outletId: 'o', pubDate: '1890-01-10', themes: ['宗教'] },
+               { id: 'hot', title: '话题作', pennameId: 'pen', form: 'article', outletId: 'o', pubDate: '1890-05-01', themes: ['政治'] }];
+    if (buzz) for (let i = 0; i < 6; i++) t.ledger.push({ id: 'z' + i, status: 'approved', pennameId: 'pen', workId: 'hot', layer: 'review', date: ad('1890-05-02', i * 5), outletId: 'o' });
+    t.currentDate = '1890-01-10';
+    let d = '1890-01-10'; while (d < '1890-09-01') { d = ad(d, 15); E2.advanceTo(t, d, S, null); }
+    return t.receptions.filter(r => r.workId === 'bk' && r.channel === 'shelf' && r.read !== 'none').length;
+  };
+  let a = 0, b = 0;
+  for (let k = 0; k < 15; k++) { a += mk(false, 's' + k); b += mk(true, 's' + k); }
+  assert(a > 0, '成书应有长尾读者'); assert(b > a * 1.3, `话题作应带动旧书：无话题 ${a}，有话题 ${b}`);
+  console.log('长尾与话题带动 ✓', { a, b });
+}
+
+// —— 幕后补完：事实清单、存档、注入、回滚 ——
+{
+  const O = await import('../src/offscreen.js');
+  const { buildInjection } = await import('../src/inject.js');
+  const so = defaultState();
+  so.persons = [{ id: 'p', name: '甲' }]; so.works = [{ id: 'w', title: '书' }]; so.pennames = [{ id: 'pen', name: 'E.E.' }];
+  so.receptions = [{ id: 'r1', personId: 'p', workId: 'w', read: 'finished', channel: 'reader', contactDate: '1890-05-02', readDate: '1890-05-03', polarity: 1, strength: 'mild' }];
+  so.currentDate = '1890-05-10';
+  const f = O.periodFacts(so, null, '1890-05-10');
+  assert.equal(f.lines.length, 1); assert(!f.empty);
+  takeSnapshot(so, 5, '1890-05-20');
+  O.storeOffscreen(so, { id: 'd1', from: null, to: '1890-05-10', summary: '', items: [{ id: 'i1', date: '1890-05-04', kind: 'salon', who: ['甲'], text: '甲在沙龙里谈起这本书', knows: 'no' }, { id: 'i2', date: '1890-05-06', kind: 'talk', who: ['甲'], text: '甲当面告诉主角', knows: 'yes' }], rumors: [{ text: '传闻一', strength: 0.4 }] });
+  const injK = buildInjection(so, null, { ...S, injectOffscreen: 'known' });
+  assert(injK.includes('当面告诉主角') && !injK.includes('沙龙里谈起'));
+  const injA = buildInjection(so, null, { ...S, injectOffscreen: 'all' });
+  assert(injA.includes('沙龙里谈起') && injA.includes('主角不知道'));
+  assert(so.rumors.some(r => r.text === '传闻一'));
+  rollbackFrom(so, 5);
+  assert.equal(so.offscreen.length, 0); assert(!so.rumors.some(r => r.text === '传闻一'));
+  console.log('幕后补完 ✓');
+}
+
+// —— 预览里修改整理包 ——
+{
+  const bb = B.normalizeBundle({ persons: [{ name: '奥克塔夫·米尔博', roles: ['writer'] }, { name: '米尔博', likes: ['同情'] }], works: [{ title: '旧名', outlet: '回声报' }], reactions: [{ date: '1890-08-26', layer: 'private_letter', person: '奥克塔夫·米尔博', work: '旧名' }], readings: [{ date: '1890-08-20', person: '米尔博', work: '旧名' }] });
+  let r = B.replaceBundleItem(bb, 'persons', 0, { ...bb.persons[0], name: '米尔博' });
+  assert.equal(r.bundle.persons.length, 1); assert.deepEqual(r.bundle.persons[0].roles, ['writer']); assert.deepEqual(r.bundle.persons[0].likes, ['同情']); assert.equal(r.bundle.reactions[0].person, '米尔博');
+  r = B.replaceBundleItem(r.bundle, 'works', 0, { ...r.bundle.works[0], title: '新名' });
+  assert.equal(r.bundle.reactions[0].work, '新名'); assert.equal(r.bundle.readings[0].work, '新名'); assert.equal(r.refs, 2);
+  assert.throws(() => B.replaceBundleItem(r.bundle, 'reactions', 0, { ...r.bundle.reactions[0], date: '' }));
+  console.log('整理包逐条修改 ✓');
+}

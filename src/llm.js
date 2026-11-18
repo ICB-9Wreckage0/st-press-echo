@@ -2,11 +2,25 @@
 //  'st'     用酒馆当前连接（generateRaw），不需要另配 API；
 //  'custom' 独立的 OpenAI 兼容接口，不占用主对话的模型和上下文。
 
-export async function callLLM({ system, user, settings, maxTokens }) {
+import { clog, countAi } from './console.js';
+
+export async function callLLM({ system, user, settings, maxTokens, label = '' }) {
     const s = settings || {};
     const responseLength = maxTokens || s.maxTokens || 1800;
-    if (s.apiMode === 'custom') return callCustom({ system, user, s, responseLength });
-    return callST({ system, user, responseLength });
+    const via = s.apiMode === 'custom' ? `独立 API${s.apiModel ? ' · ' + s.apiModel : ''}` : '酒馆当前连接';
+    const t0 = Date.now();
+    countAi();
+    clog('ai', `调用模型${label ? '：' + label : ''}（${via}；提示词 ${(String(system || '').length + String(user || '').length).toLocaleString()} 字，最多输出 ${responseLength} token）`,
+        `【系统提示词】\n${String(system || '').slice(0, 4000)}${String(system || '').length > 4000 ? '\n……（后略）' : ''}\n\n【用户内容】\n${String(user || '').slice(0, 4000)}${String(user || '').length > 4000 ? '\n……（后略）' : ''}`);
+    try {
+        const out = s.apiMode === 'custom' ? await callCustom({ system, user, s, responseLength }) : await callST({ system, user, responseLength });
+        const txt = String(out ?? '');
+        clog(txt.trim() ? 'info' : 'warn', `模型返回 ${txt.length.toLocaleString()} 字，用时 ${((Date.now() - t0) / 1000).toFixed(1)} 秒${txt.trim() ? '' : '（空回复）'}`, txt.slice(0, 6000) || null);
+        return out;
+    } catch (err) {
+        clog('error', `模型调用失败（${((Date.now() - t0) / 1000).toFixed(1)} 秒）：${err.message || err}`, err.stack || null);
+        throw err;
+    }
 }
 
 async function callCustom({ system, user, s, responseLength }) {

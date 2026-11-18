@@ -35,7 +35,7 @@ export async function buildEvidenceCard(work, settings) {
 4. 只输出 JSON：
 ${CARD_SCHEMA}`;
     const user = `作品：《${work.title}》（${FORMS[work.form] || ''}）\n\n原文${src.length > 24000 ? `（全文 ${src.length} 字，这里是开头、中段和结尾的节选）` : ''}：\n${sampleText(src, 24000)}`;
-    const raw = await callLLM({ system, user, settings, maxTokens: 3500 });
+    const raw = await callLLM({ system, user, settings, maxTokens: 3500, label: `生成《${work.title}》的证据卡` });
     const card = extractJSON(raw);
     card.builtAt = new Date().toISOString();
     card.sourceLength = src.length;
@@ -216,7 +216,7 @@ ${cl.length ? '作品的主张：\n' + cl.map(x => '  - ' + x).join('\n') : ''}
 ${cmpText ? '思想对照（推演结果）：' + cmpText : ''}
 ${card ? '证据卡：\n' + cardText(card) : `（尚无证据卡，只有摘要：${work.summary || '无'}。没有原文时，技巧、论证、情感一律填 null，styleNotes 留空）`}
 ${passage ? `\n【他读到的原文段落${rec.read === 'skimmed' ? '（只读了开头一部分）' : '（节选：开头、中段、结尾）'}】\n${passage}` : ''}`;
-    const raw = await callLLM({ system, user, settings, maxTokens: 2600 });
+    const raw = await callLLM({ system, user, settings, maxTokens: 2600, label: `${person.name} 对《${work.title}》的私下看法` });
     const op = extractJSON(raw);
     if (!op || typeof op !== 'object' || !op.summary) throw new Error('模型没有按格式返回看法，请重试');
     normalizeOpinion(op, card);
@@ -259,7 +259,7 @@ ${PROFILE_SCHEMA}`;
 已登记的文体偏好：${stylePrefLines(person).join('；') || '无'}
 ${recs.length ? '他读主角作品后的私下看法：\n' + recs.join('\n') : ''}
 ${evs.length ? '他已经写过的评论、书信：\n' + evs.join('\n') : ''}`;
-    const raw = await callLLM({ system, user, settings, maxTokens: 1800 });
+    const raw = await callLLM({ system, user, settings, maxTokens: 1800, label: `起草 ${person.name} 的立场与文体偏好` });
     const out = extractJSON(raw);
     if (!out || typeof out !== 'object') throw new Error('模型没有按格式返回，请重试');
     return {
@@ -283,7 +283,7 @@ export async function draftWorkClaims(state, work, settings) {
 ${work.summary ? '摘要：' + work.summary : ''}
 ${work.evidence ? '证据卡：\n' + cardText(work.evidence, 3000) : ''}
 ${src.length >= 200 ? '原文' + (src.length > 12000 ? '（节选）' : '') + '：\n' + sampleText(src, 12000) : ''}`;
-    const raw = await callLLM({ system, user, settings, maxTokens: 1200 });
+    const raw = await callLLM({ system, user, settings, maxTokens: 1200, label: `提取《${work.title}》的主张` });
     const out = extractJSON(raw);
     const list = Array.isArray(out?.claims) ? out.claims : Array.isArray(out) ? out : null;
     if (!list) throw new Error('模型没有按格式返回，请重试');

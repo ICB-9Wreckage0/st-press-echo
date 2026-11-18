@@ -16,7 +16,7 @@
       "stances": [{ "issue": "议题（短名词，如 死刑）", "side": "con", "strength": 3, "note": "具体立场", "source": "依据" }],
       "stylePrefs": [{ "aspect": "文体项目（如 解释密度）", "leaning": "倾向一句话", "tolerance": 2, "source": "依据" }],
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
-  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day",
+  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day", "shelf": "", "shelfUntil": "",
       "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
   "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
@@ -37,6 +37,7 @@
 - stances（人物在具体议题上的立场）：side=pro 支持 / con 反对 / mixed 有保留；strength=1 低 / 2 中 / 3 高（对他有多重要）；source 写依据（史实/某日书信/推测）。只写有依据的；推测的 strength 不要给 3
 - stylePrefs（人物读作品时在意的写法，是倾向不是规则）：aspect 如 词汇选择、句子节奏、解释密度、修辞密度、叙述距离、情绪强度、论证重复度；leaning 一句话；tolerance=1 难以容忍 / 2 视情况 / 3 宽容。不要用他自己的文风反推
 - claims（作品在议题上的主张）：side 同上，“大体反对但保留例外”填 mixed；issue 尽量与人物 stances 用同一个词，才能对照出赞同或分歧
+- shelf（作品发表后是否长期流通、一直有人找来读）：yes / no / 留空按形式（成书、单行本、小册子算流通）；shelfUntil：售罄或绝版日期（不知道就空）
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：serial=报纸连载，article=单篇文章，book=成书，pamphlet=小册子/附赠本，translation_serial=译作连载，translation_book=译作单行本
@@ -69,7 +70,7 @@
       "stances": [{ "issue": "议题（短名词，如 死刑）", "side": "con", "strength": 3, "note": "具体立场", "source": "依据" }],
       "stylePrefs": [{ "aspect": "文体项目（如 解释密度）", "leaning": "倾向一句话", "tolerance": 2, "source": "依据" }],
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
-  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day",
+  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day", "shelf": "", "shelfUntil": "",
       "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
   "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
@@ -89,6 +90,7 @@
 - stances（人物在具体议题上的立场）：side=pro 支持 / con 反对 / mixed 有保留；strength=1 低 / 2 中 / 3 高（对他有多重要）；source 写依据（史实/某日书信/推测）。只写有依据的；推测的 strength 不要给 3
 - stylePrefs（人物读作品时在意的写法，是倾向不是规则）：aspect 如 词汇选择、句子节奏、解释密度、修辞密度、叙述距离、情绪强度、论证重复度；leaning 一句话；tolerance=1 难以容忍 / 2 视情况 / 3 宽容。不要用他自己的文风反推
 - claims（作品在议题上的主张）：side 同上，“大体反对但保留例外”填 mixed；issue 尽量与人物 stances 用同一个词，才能对照出赞同或分歧
+- shelf（作品发表后是否长期流通、一直有人找来读）：yes / no / 留空按形式（成书、单行本、小册子算流通）；shelfUntil：售罄或绝版日期（不知道就空）
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：serial=报纸连载，article=单篇文章，book=成书，pamphlet=小册子/附赠本，translation_serial=译作连载，translation_book=译作单行本

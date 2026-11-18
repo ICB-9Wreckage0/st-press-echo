@@ -22,6 +22,12 @@ export const DEFAULT_SETTINGS = {
     injectDepth: 4,
     injectMaxItems: 12,
     injectEraNotes: true,
+    injectOffscreen: 'known', // 幕后内容注入：off 不注入 / known 只注入主角能知道的 / all 全部（标明主角不知道）
+    // 一键推演时让 AI 补完
+    aiFill: 'opinions', // off / brief 幕后补完 / opinions 再给新读者生成看法 / all 再给新入账反响写稿
+    aiFillMax: 10,
+    aiFillOnAuto: false,
+    consoleAuto: true,
     // 写稿
     apiMode: 'st', // 'st' 用酒馆当前连接；'custom' 用独立 OpenAI 兼容接口
     apiUrl: '',
@@ -61,6 +67,7 @@ export function defaultState() {
         epiHints: [],
         rolls: {},
         rumors: [],
+        offscreen: [],
         reputation: {},
         pendingMerge: [],
         log: [],

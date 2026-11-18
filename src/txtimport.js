@@ -20,7 +20,7 @@ const PART_RE = /^(上|中|下|上篇|下篇|前篇|后篇|续|[一二三四五�
 
 /** 去掉文件名开头的排序前缀：0、00、AA、A1 之类（后面紧跟非数字时才去，免得把“1999年”切掉） */
 function stripPrefix(s) {
-    return s.replace(/^(?:0+|[A-Z]{1,3}\d?)(?=[^\dA-Za-z])/, '').replace(/^[-_\s.]+/, '');
+    return s.replace(/^\d{1,3}[\s._、-]+(?=\D)/, '').replace(/^(?:0+|[A-Z]{1,3}\d?)(?=[^\dA-Za-z])/, '').replace(/^[-_\s.]+/, '');
 }
 
 /**
@@ -104,7 +104,8 @@ export function planImport(state, fileName, text) {
         dateApprox: p.dateApprox,
         dateRaw: p.dateRaw,
         length: String(text || '').length,
-        action: p.isDraft ? 'skip' : existing ? 'update' : 'new',
+        // 没写日期：能对上已有作品就补正文；对不上才当作未发表的草稿
+        action: existing ? 'update' : p.isDraft ? 'skip' : 'new',
         workId: existing?.id || '',
         isDraft: p.isDraft,
     };

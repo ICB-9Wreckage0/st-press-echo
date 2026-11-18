@@ -144,7 +144,7 @@ export async function writeEvent(state, ev, era, settings) {
         try { await generateOpinion(state, rec, era, settings); } catch (e) { console.warn('[报刊回声] 生成看法失败，继续写稿', e); }
     }
     const { system, user, stanceOnly } = buildWriterPrompt(state, ev, era, settings);
-    const raw = await callLLM({ system, user, settings });
+    const raw = await callLLM({ system, user, settings, label: `写稿：${ev.date} ${LAYERS[ev.layer]?.label || ev.layer}` });
     const obj = extractJSON(raw);
     if (!obj.body || String(obj.body).trim().length < 20) throw new Error('模型返回的正文过短或为空');
     const text = {

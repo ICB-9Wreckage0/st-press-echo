@@ -98,6 +98,7 @@ export const CHANNELS = {
     seek: '读过同一作者的作品，主动找来读',
     follow: '追读这位作者，新作一出就看',
     recommend: '熟人谈起或推荐',
+    shelf: '书店、图书馆或沙龙里碰到（成书长期流通）',
     manual: '手动记录',
 };
 
@@ -538,6 +539,65 @@ function finishSilent(out, why) {
 }
 
 /** 一个人对一部作品走完四关。contactOverride 用于“看到评论才知道”和手动记录 */
+// ———————————— 长尾：成书在发表后持续流通 ————————————
+
+const SHELF_BASE = { book: 0.05, translation_book: 0.05, pamphlet: 0.035 };
+/** 这部作品是否长期流通：作品里手动指定的优先，否则成书、译本单行本、小册子算 */
+export function onShelf(work) {
+    if (work.shelf === 'no') return false;
+    if (work.shelf === 'yes') return true;
+    return work.form in SHELF_BASE;
+}
+const monthStarts = (from, to) => {
+    const out = []; let y = +from.slice(0, 4), m = +from.slice(5, 7);
+    for (;;) { m++; if (m > 12) { m = 1; y++; } const d = `${y}-${String(m).padStart(2, '0')}-01`; if (cmp(d, to) > 0) break; out.push(d); }
+    return out;
+};
+/** 话题带动：某月之前 60 天内，这个署名有多少篇已见报的评论、论战、转载（不论评哪部作品） */
+function penBuzz(state, pennameId, date) {
+    const from = addDays(date, -60);
+    const evs = (state.ledger || []).filter(e => e.status === 'approved' && e.pennameId === pennameId && LAYERS[e.layer]?.public
+        && cmp(e.date, from) >= 0 && cmp(e.date, date) < 0);
+    let n = 0; const byWork = {};
+    for (const e of evs) { const w = e.layer === 'mentions' ? Math.min(2, (e.count || 0) / 10) : e.layer === 'polemic' ? 1.5 : 1; n += w; byWork[e.workId] = (byWork[e.workId] || 0) + w; }
+    const top = Object.entries(byWork).sort((a, b) => b[1] - a[1])[0];
+    return { n, topWorkId: top?.[0] || null };
+}
+
+function shelfStage(state, s, era, seed, newDate, report) {
+    for (const work of state.works || []) {
+        if (!work.pubDate || cmp(work.pubDate, newDate) > 0 || !onShelf(work)) continue;
+        const until = work.shelfUntil && cmp(work.shelfUntil, newDate) < 0 ? work.shelfUntil : newDate;
+        const months = monthStarts(work.pubDate, until);
+        if (!months.length) continue;
+        const versions = new Set([work.id, work.parentId, ...(state.works || []).filter(w => w.parentId === work.id).map(w => w.id)].filter(Boolean));
+        const rep = state.reputation?.[work.pennameId] || {};
+        const repF = clamp(1 + 0.5 * Math.max(0, (rep.general || 0) + (rep.literary || 0)), 1, 2.5);
+        const base = SHELF_BASE[work.form] ?? 0.05;
+        for (const person of state.persons || []) {
+            if (person.active === false) continue;
+            const recs = state.receptions.filter(r => r.personId === person.id && versions.has(r.workId));
+            if (recs.some(r => r.read && r.read !== 'none')) continue; // 已经接触过（任一版本）
+            if (!state.rolls[`${work.id}|${person.id}`]) continue; // 首次推演还没轮到
+            const interest = interestOf(person, workTags(state, work));
+            for (let i = 0; i < months.length; i++) {
+                const key = `${work.id}|${person.id}|shelf|${months[i].slice(0, 7)}`;
+                if (state.rolls[key]) continue;
+                state.rolls[key] = { at: newDate };
+                const bz = penBuzz(state, work.pennameId, months[i]);
+                const buzzF = clamp(1 + 0.3 * bz.n, 1, 3);
+                const p = clamp(base * Math.pow(0.88, i) * repF * buzzF * (0.4 + interest), 0, 0.5);
+                if (roll(seed, key) >= p) continue;
+                const hot = buzzF > 1.2 ? `；这个署名近两个月见报 ${Math.round(bz.n * 10) / 10} 次${bz.topWorkId && bz.topWorkId !== work.id ? `，多半因《${byId(state.works, bz.topWorkId)?.title || '?'}》引起的话题去找来读` : ''}（话题 ×${buzzF.toFixed(1)}）` : '';
+                // 碰到了：按这次重新走一遍（之前“没接触到”的记录留着，回滚时用得上；显示时会被这条盖过）
+                runPipeline(state, s, era, work, person, seed, report, { shelf: { date: months[i], p: 1, why: `${months[i].slice(0, 7)}：成书仍在流通，第 ${i + 1} 个月，碰到的概率 ${Math.round(p * 100)}%（名气 ×${repF.toFixed(1)}，题材兴趣 ${Math.round(interest * 100)}%${hot}）` } });
+                report.shelf = (report.shelf || 0) + 1;
+                break;
+            }
+        }
+    }
+}
+
 function runPipeline(state, s, era, work, person, seed, report, opts = {}) {
     const { via, manualRead } = opts;
     let rec;
@@ -546,15 +606,16 @@ function runPipeline(state, s, era, work, person, seed, report, opts = {}) {
     } else {
         const extra = via ? { ch: 'review', p: 0.5, lag: [0, 3], from: via.date }
             : opts.seek ? { ch: 'seek', p: opts.seek.p, lag: [0, 1], from: opts.seek.date }
-            : opts.recommend ? { ch: 'recommend', p: 0.6, lag: [0, 4], from: opts.recommend.date } : null;
+            : opts.recommend ? { ch: 'recommend', p: 0.6, lag: [0, 4], from: opts.recommend.date }
+            : opts.shelf ? { ch: 'shelf', p: 1, lag: [0, 25], from: opts.shelf.date } : null;
         const c = contactStage(state, s, era, work, person, seed, extra);
         rec = {
-            id: uid('rc'), key: `${work.id}|${person.id}${via ? '|via' : opts.seek ? '|seek' : opts.recommend ? '|rec' : ''}`, origin: 'engine', workId: work.id, personId: person.id,
+            id: uid('rc'), key: `${work.id}|${person.id}${via ? '|via' : opts.seek ? '|seek' : opts.recommend ? '|rec' : opts.shelf ? '|shelf' : ''}`, origin: 'engine', workId: work.id, personId: person.id,
             channel: c.best?.ch || null, contactDate: c.best?.date || null, read: c.best ? null : 'none',
-            why: [...c.why], eventIds: [], opinion: null, viaEventId: via?.id || null,
+            why: [...(opts.shelf ? [opts.shelf.why] : []), ...c.why], eventIds: [], opinion: null, viaEventId: via?.id || null,
         };
         if (c.best) {
-            const r = readStage(state, s, era, work, person, c.best, seed + (via ? '|via' : opts.seek ? '|seek' : opts.recommend ? '|rec' : ''));
+            const r = readStage(state, s, era, work, person, c.best, seed + (via ? '|via' : opts.seek ? '|seek' : opts.recommend ? '|rec' : opts.shelf ? '|shelf' + opts.shelf.date : ''));
             rec.read = r.read; rec.readDate = r.readDate || null; rec.why.push(...r.why); rec.interest = r.interest;
         }
     }
@@ -784,6 +845,9 @@ export function advanceTo(state, newDate, settings, era) {
             runPipeline(state, s, era, work, person, seed, report);
         }
     }
+
+    // ①b 长尾：成书、小册子发表后还会在书店、图书馆、沙龙里流通，每个月给还没碰过它的人一次机会
+    shelfStage(state, s, era, seed, newDate, report);
 
     // ② 回响：已批准的公开评论，让常读那份刊物、原本没接触到作品的人“因评论而知道原作”
     for (const ev of state.ledger) {

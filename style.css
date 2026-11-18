@@ -99,7 +99,7 @@
 .pe-count-dim { background: transparent; color: inherit; border: 1px solid var(--pe-border); font-weight: normal; }
 
 /* ---------- 主体 ---------- */
-.pe-body { flex: 1; overflow-y: auto; padding: 12px 16px 28px; }
+.pe-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 28px; }
 .pe-body h4 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 20px 0 8px; font-size: 1.05em; }
 .pe-body h4:first-child { margin-top: 4px; }
 .pe-body h5 { margin: 14px 0 6px; opacity: .8; font-size: .95em; }
@@ -644,3 +644,69 @@ span.pe-pol:not(.pe-chip) { font-size: .9em; padding: 0 4px; border: 1px solid; 
 .pe-op-no > b { color: var(--pe-bad); }
 .pe-op-line q { opacity: .8; font-style: italic; }
 .pe-op-line .pe-chip { margin-right: 4px; }
+.pe-body .menu_button.pe-big { padding: 8px 16px; font-size: 1.02em; font-weight: 600; white-space: nowrap; }
+
+/* ---------- 表单底部操作：主按钮在右下角 ---------- */
+.pe-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--pe-border); }
+.pe-actions-extra { display: flex; gap: 8px; flex-wrap: wrap; margin-right: auto; }
+.pe-actions-extra:empty { display: none; }
+.pe-actions .menu_button { margin: 0; }
+.pe-actions .pe-primary { min-width: 5.5em; }
+
+/* ---------- 控制台 ---------- */
+.pe-con-btn { position: relative; }
+.pe-con-badge { position: absolute; top: -4px; right: -6px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; font-size: 10px; line-height: 15px; text-align: center; background: var(--pe-bad); color: #fff; display: none; }
+.pe-con-badge.on { display: block; }
+.pe-busy { cursor: pointer; }
+.pe-con { flex: 0 0 auto; height: 34%; min-height: 120px; max-height: 70%; display: flex; flex-direction: column; border-top: 2px solid var(--pe-accent); background: color-mix(in srgb, #000 35%, var(--pe-bg)); resize: vertical; overflow: hidden; font-size: .86em; }
+.pe-con[hidden] { display: none; }
+.pe-con-head { display: flex; align-items: center; gap: 10px; padding: 5px 10px; border-bottom: 1px solid var(--pe-border); flex-wrap: wrap; }
+.pe-con-head > b { color: var(--pe-accent); }
+.pe-con-task { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1 1 auto; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.pe-con-bar { display: inline-block; width: 90px; height: 6px; border-radius: 3px; background: var(--pe-border); overflow: hidden; flex: 0 0 auto; }
+.pe-con-bar i { display: block; height: 100%; background: var(--pe-accent); transition: width .3s; }
+.pe-con-spin { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--pe-accent); border-right-color: transparent; animation: pe-spin .8s linear infinite; flex: 0 0 auto; }
+@keyframes pe-spin { to { transform: rotate(360deg); } }
+.pe-con-opt { display: inline-flex; align-items: center; gap: 4px; opacity: .8; cursor: pointer; }
+.pe-con-b { background: none; border: 1px solid var(--pe-border); color: inherit; border-radius: 6px; padding: 1px 8px; cursor: pointer; font: inherit; }
+.pe-con-b:hover { border-color: var(--pe-accent); color: var(--pe-accent); }
+.pe-con-list { flex: 1; overflow: auto; padding: 4px 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.pe-con-e { padding: 2px 10px; line-height: 1.5; border-left: 3px solid transparent; }
+.pe-con-e > summary { cursor: pointer; list-style: none; }
+.pe-con-e > summary::-webkit-details-marker { display: none; }
+.pe-con-e > summary .pe-con-text::after { content: ' ▸'; opacity: .5; }
+.pe-con-e[open] > summary .pe-con-text::after { content: ' ▾'; }
+.pe-con-time { opacity: .45; margin-right: 8px; }
+.pe-con-lv { display: inline-block; min-width: 3.6em; margin-right: 6px; opacity: .75; }
+.pe-con-e pre { margin: 4px 0 6px 0; padding: 6px 8px; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; background: color-mix(in srgb, #000 30%, transparent); border-radius: 6px; font-size: .95em; }
+.lv-task { border-left-color: var(--pe-accent); } .lv-task .pe-con-text { font-weight: 600; color: var(--pe-accent); }
+.lv-step .pe-con-text { opacity: .9; }
+.lv-ai { border-left-color: #8fa8d8; } .lv-ai .pe-con-lv { color: #8fa8d8; opacity: 1; }
+.lv-ok .pe-con-lv, .lv-ok .pe-con-text { color: var(--pe-good); }
+.lv-warn { border-left-color: var(--pe-mid); } .lv-warn .pe-con-lv, .lv-warn .pe-con-text { color: var(--pe-mid); }
+.lv-error { border-left-color: var(--pe-bad); background: color-mix(in srgb, var(--pe-bad) 10%, transparent); } .lv-error .pe-con-lv, .lv-error .pe-con-text { color: var(--pe-bad); }
+
+/* ---------- 幕后 ---------- */
+.pe-os { border: 1px solid var(--pe-border); border-radius: 8px; margin-bottom: 8px; }
+.pe-os > summary { padding: 8px 12px; cursor: pointer; }
+.pe-os-item { margin: 0 12px 8px; padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--pe-border); background: color-mix(in srgb, var(--pe-fg) 4%, transparent); line-height: 1.55; }
+.pe-os-no { border-left-color: #8fa8d8; }
+.pe-os-maybe { border-left-color: var(--pe-mid); }
+.pe-os-yes { border-left-color: var(--pe-good); }
+.pe-os-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 3px; }
+.pe-os-no .pe-os-k { color: #8fa8d8; } .pe-os-maybe .pe-os-k { color: var(--pe-mid); } .pe-os-yes .pe-os-k { color: var(--pe-good); }
+.pe-os-basis { font-size: .85em; }
+.pe-os .pe-actions { margin: 0 12px 8px; padding-top: 6px; }
+
+/* ---------- 整理结果预览：逐条修改 ---------- */
+.pe-blist { display: flex; flex-direction: column; gap: 3px; padding: 4px 0 6px; }
+.pe-bitem { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px; }
+.pe-bitem:hover { background: color-mix(in srgb, var(--pe-fg) 5%, transparent); }
+.pe-bitem-on { background: color-mix(in srgb, var(--pe-accent) 10%, transparent); }
+.pe-bitem-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pe-bitem small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pe-bitem .menu_button.pe-mini { padding: 1px 8px; margin: 0; }
+.pe-bitem-editor { margin: 4px 0 10px 8px; }
+.pe-bitem-editor textarea { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .9em; }
+.pe-linkbtn { background: none; border: none; padding: 0; color: var(--pe-accent); text-decoration: underline; cursor: pointer; font: inherit; }
+#pe-bundle-json { width: 100%; box-sizing: border-box; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .88em; }

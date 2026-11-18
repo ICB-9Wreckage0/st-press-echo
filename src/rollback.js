@@ -29,6 +29,7 @@ export function takeSnapshot(state, mesId, toDate = null) {
         eventIds: (state.ledger || []).map(e => e.id),
         eventStatus: Object.fromEntries((state.ledger || []).filter(e => e.origin === 'engine').map(e => [e.id, e.status])),
         receptionIds: (state.receptions || []).map(r => r.id),
+        offscreenIds: (state.offscreen || []).map(d => d.id),
     });
     state.snapshots.sort((a, b) => a.mesId - b.mesId);
     if (state.snapshots.length > MAX_SNAPSHOTS) state.snapshots.splice(0, state.snapshots.length - MAX_SNAPSHOTS);
@@ -66,6 +67,7 @@ export function rollbackFrom(state, mesId) {
         if (snap.eventStatus[e.id] === 'scheduled' && (e.status !== 'approved' || e.auto)) { e.status = 'scheduled'; e.auto = false; }
     }
     state.receptions = (state.receptions || []).filter(r => r.origin === 'manual' || keepRec.has(r.id));
+    if (snap.offscreenIds) { const keepOs = new Set(snap.offscreenIds); state.offscreen = (state.offscreen || []).filter(d => keepOs.has(d.id)); }
     state.snapshots = state.snapshots.filter(s => s.mesId < mesId);
     state.detectedDate = null;
     recomputeReputation(state);

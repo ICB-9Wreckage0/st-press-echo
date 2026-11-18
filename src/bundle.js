@@ -9,6 +9,7 @@
 import { normalizeISO, cmp } from './date.js';
 import { extractJSON, uid } from './util.js';
 import { callLLM } from './llm.js';
+import { clog } from './console.js';
 import { FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, REL_TYPES, REL_FREQ, setStatus, recordManualReading, recomputeReputation, normSide, normStrength } from './engine.js';
 
 // 以对象为元素的列表按关键字段合并：同一议题/同一文体项目，新的覆盖旧的
@@ -38,7 +39,7 @@ export const FORMAT_SPEC = `{
       "stances": [{ "issue": "议题（短名词，如 死刑）", "side": "con", "strength": 3, "note": "具体立场", "source": "依据" }],
       "stylePrefs": [{ "aspect": "文体项目（如 解释密度）", "leaning": "倾向一句话", "tolerance": 2, "source": "依据" }],
       "relations": [{ "to": "另一个人物的名字", "type": "friend", "closeness": 2, "frequency": "weekly", "trust": 0.6, "discloseOpinions": true, "discloseIdentity": false, "since": "这段关系从何时开始（可空）", "until": "何时断了往来（可空）" }] }],
-  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day",
+  "works": [{ "title": "作品名", "aliases": ["外文名、别名"], "penname": "署名", "form": "serial", "outlet": "首发刊物名", "pubDate": "首次发表 YYYY-MM-DD", "endDate": "连载结束 YYYY-MM-DD 或空", "themes": ["题材标签"], "summary": "内容摘要 80 字内", "versionOf": "若是另一部作品的单行本/再版，写那部作品的名字", "datePrecision": "day", "shelf": "", "shelfUntil": "",
       "claims": [{ "issue": "议题（与人物 stances 用同一个词）", "side": "mixed", "note": "作品具体怎么说", "where": "出处" }] }],
   "reactions": [{ "date": "YYYY-MM-DD", "layer": "review", "person": "谁（读者来信、剪报可空）", "outlet": "登在哪（私信可空）", "work": "针对哪部作品", "polarity": 1, "count": null, "title": "文章标题（若有）", "summary": "内容概要", "evidence": "依据：聊天里的原话或位置，40 字内", "datePrecision": "day" }],
   "readings": [{ "date": "YYYY-MM-DD", "person": "谁", "work": "哪部作品", "read": "finished", "note": "依据" }],
@@ -58,6 +59,7 @@ export const FORMAT_RULES = `字段取值：
 - stances（人物在具体议题上的立场）：side=pro 支持 / con 反对 / mixed 有保留；strength=1 低 / 2 中 / 3 高（对他有多重要）；source 写依据（史实/某日书信/推测）。只写有依据的；推测的 strength 不要给 3
 - stylePrefs（人物读作品时在意的写法，是倾向不是规则）：aspect 如 词汇选择、句子节奏、解释密度、修辞密度、叙述距离、情绪强度、论证重复度；leaning 一句话；tolerance=1 难以容忍 / 2 视情况 / 3 宽容。不要用他自己的文风反推
 - claims（作品在议题上的主张）：side 同上，“大体反对但保留例外”填 mixed；issue 尽量与人物 stances 用同一个词，才能对照出赞同或分歧
+- shelf（作品发表后是否长期流通、一直有人找来读）：yes / no / 留空按形式（成书、单行本、小册子算流通）；shelfUntil：售罄或绝版日期（不知道就空）
 - knowsIdentity：此人是否知道主角就是这个笔名的作者
 - real：是否真实历史人物 / 真实存在的刊物
 - form（作品形式）：${enumLine(FORMS)}
@@ -189,6 +191,7 @@ export function normalizeBundle(obj) {
             title: bare(w.title || w.name), aliases: arr(w.aliases).map(bare).filter(a => a && a !== bare(w.title || w.name)), penname: str(w.penname),
             form: enumKey(FORMS, w.form, ''), outlet: bare(w.outlet || w.outletName),
             pubDate: date(w.pubDate), endDate: date(w.endDate), datePrecision: precKey(w.datePrecision), themes: arr(w.themes).map(str), summary: str(w.summary), versionOf: bare(w.versionOf),
+            shelf: w.shelf === true || w.shelf === 'yes' ? 'yes' : w.shelf === false || w.shelf === 'no' ? 'no' : '', shelfUntil: date(w.shelfUntil),
             claims: arr(w.claims).filter(x => x && str(x.issue)).map(x => ({ issue: str(x.issue), side: normSide(x.side), note: str(x.note), where: str(x.where) })),
         })),
         reactions: [], readings: [],
@@ -235,6 +238,7 @@ export function mergeBundles(a, b) {
                 if (f === nameField) continue; // 名字以先出现的为准，后来的写法记作别名
                 if (f === 'relations') { const m = new Map((ex.relations || []).map(r => [r.to, r])); for (const r of v) m.set(r.to, { ...(m.get(r.to) || {}), ...r }); ex.relations = [...m.values()]; continue; }
                 if (KEYED[f]) { ex[f] = mergeKeyed(ex[f], v, KEYED[f]); continue; }
+                if (f === 'rolesGiven') { ex[f] = !!(ex[f] || v); continue; }
                 if (Array.isArray(v)) ex[f] = [...new Set([...(ex[f] || []), ...v])];
                 else if (v !== '' && v != null) ex[f] = v; // 后出现的（更新的）覆盖
             }
@@ -395,7 +399,7 @@ export function applyBundle(state, b, { kinds = null, dateMode = 'set', settings
             const pen = w.penname ? (findByName(state.pennames, w.penname) || (() => { const p = { ...blankPenname(), name: w.penname }; state.pennames.push(p); report.created.push(`笔名“${w.penname}”`); return p; })()) : null;
             const data = {
                 aliases: w.aliases, form: w.form, outletId: ensureOutlet(state, w.outlet, report), pubDate: w.pubDate, endDate: w.endDate,
-                themes: w.themes, summary: w.summary, pennameId: pen?.id || '', datePrecision: w.datePrecision,
+                themes: w.themes, summary: w.summary, pennameId: pen?.id || '', datePrecision: w.datePrecision, shelf: w.shelf, shelfUntil: w.shelfUntil,
             };
             if (!ex) { ex = { ...blankWork(), title: w.title, pennameId: state.pennames[0]?.id || '' }; state.works.push(ex); }
             fill(ex, data, sync);
@@ -500,12 +504,15 @@ ${FORMAT_RULES}
 ${known ? `\n已知名字（指同一对象时沿用完全相同的写法）：\n${known}` : ''}`;
         let raw;
         try {
-            raw = await callLLM({ system, user: `【${chunks[i].label}】\n${chunks[i].text}`, settings, maxTokens: 4000 });
+            raw = await callLLM({ system, user: `【${chunks[i].label}】\n${chunks[i].text}`, settings, maxTokens: 4000, label: `整理第 ${i + 1}/${chunks.length} 段（${chunks[i].label}）` });
             const part = normalizeBundle(extractJSON(raw));
             bundle = mergeBundles(bundle, part);
+            clog('info', `第 ${i + 1} 段整理出：人物 ${part.persons.length}、作品 ${part.works.length}、刊物 ${part.outlets.length}、反响 ${part.reactions.length}、阅读 ${part.readings.length}${part.warnings.length ? `；提示 ${part.warnings.length} 条` : ''}`,
+                [part.persons.length ? '人物：' + part.persons.map(p => p.name).join('、') : '', part.works.length ? '作品：' + part.works.map(w => w.title).join('、') : '', ...part.reactions.map(r => `反响：${r.date || ''} ${r.person || ''} ${r.layer || ''} ${r.work || ''}`), ...part.warnings].filter(Boolean).join('\n') || null);
         } catch (e) {
             bundle = mergeBundles(bundle, normalizeBundle({}));
             bundle.warnings.push(`第 ${i + 1} 段（${chunks[i].label}）整理失败：${e.message}`);
+            clog('error', `第 ${i + 1} 段（${chunks[i].label}）整理失败：${e.message}`, raw ? '模型原始回复：\n' + String(raw).slice(0, 6000) : (e.stack || null));
         }
     }
     return bundle || normalizeBundle({});
@@ -532,4 +539,47 @@ export function looksLikeBundle(obj) {
     if (!obj || typeof obj !== 'object') return false;
     if (obj.format === FORMAT_ID) return true;
     return ['works', 'persons', 'outlets', 'reactions', 'pennames'].filter(k => Array.isArray(obj[k])).length >= 2;
+}
+
+// ———————————— 预览里修改整理包 ————————————
+
+/** 改了名字之后，把整理包里其他地方对旧名字的引用一起改掉 */
+export function renameRefs(b, kind, oldName, newName) {
+    if (!oldName || !newName || oldName === newName) return 0;
+    let n = 0;
+    const sw = v => { if (sameName(v, oldName)) { n++; return newName; } return v; };
+    const swArr = a => (Array.isArray(a) ? a.map(sw) : a);
+    if (kind === 'persons') {
+        for (const r of b.reactions || []) r.person = sw(r.person);
+        for (const r of b.readings || []) r.person = sw(r.person);
+        for (const p of b.persons || []) for (const r of p.relations || []) r.to = sw(r.to);
+        for (const p of b.pennames || []) p.knownBy = swArr(p.knownBy);
+    } else if (kind === 'works') {
+        for (const r of b.reactions || []) r.work = sw(r.work);
+        for (const r of b.readings || []) r.work = sw(r.work);
+        for (const w of b.works || []) w.versionOf = sw(w.versionOf);
+    } else if (kind === 'outlets') {
+        for (const r of b.reactions || []) r.outlet = sw(r.outlet);
+        for (const w of b.works || []) w.outlet = sw(w.outlet);
+        for (const p of b.persons || []) { p.outlets = swArr(p.outlets); p.reads = swArr(p.reads); }
+    } else if (kind === 'pennames') {
+        for (const w of b.works || []) w.penname = sw(w.penname);
+    }
+    return n;
+}
+
+/** 把一条改过的条目规整后放回整理包；改名时同步引用，并合并因此重名的条目 */
+export function replaceBundleItem(b, kind, index, raw) {
+    const old = b[kind]?.[index];
+    if (!old) throw new Error('条目不存在');
+    const norm = normalizeBundle({ [kind]: [raw] });
+    const item = norm[kind]?.[0];
+    if (!item) throw new Error(norm.warnings[0] || '这条不完整（例如缺日期或名字），没有保存');
+    if (kind === 'persons') item.rolesGiven = old.rolesGiven || JSON.stringify(item.roles) !== JSON.stringify(old.roles);
+    const nameKey = kind === 'works' ? 'title' : 'name';
+    const refs = old[nameKey] && item[nameKey] ? renameRefs(b, kind, old[nameKey], item[nameKey]) : 0;
+    b[kind][index] = item;
+    const merged = mergeBundles(normalizeBundle({ storyDate: b.storyDate, place: b.place }), { ...b, warnings: [] });
+    merged.warnings = b.warnings || [];
+    return { bundle: merged, refs, merged: merged[kind].length < b[kind].length };
 }

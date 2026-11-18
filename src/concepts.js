@@ -97,7 +97,7 @@ export async function buildConcepts(state, settings, { full = false, onProgress 
 3. 组名用简短中文（2–6 字）。尽量沿用已有的组名。
 4. 只输出 JSON：{"groups":[{"name":"组名","tags":["标签",...]}]}，tags 里的标签必须原样照抄。`;
         const user = `${groups.length ? `已有的组：${groups.join('、')}\n\n` : ''}要归类的标签：\n${batches[bi].join('、')}`;
-        const raw = await callLLM({ system, user, settings, maxTokens: 4000 });
+        const raw = await callLLM({ system, user, settings, maxTokens: 4000, label: `归类标签 ${bi + 1}/${batches.length}` });
         const obj = extractJSON(raw);
         for (const g of obj.groups || []) {
             const name = String(g.name || '').trim();

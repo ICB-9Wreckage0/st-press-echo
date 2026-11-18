@@ -5,6 +5,7 @@
 import { LAYERS, CIRCLES, repLabel, knownToUser, byId } from './engine.js';
 import { weekdayZh } from './date.js';
 import { truncate } from './util.js';
+import { offscreenLines } from './offscreen.js';
 
 export const INJECT_KEY = 'press_echo';
 
@@ -49,6 +50,9 @@ export function buildInjection(state, era, settings) {
         L.push('坊间传闻：');
         for (const r of rumors) L.push(`- ${r.text}（热度 ${Math.round(r.strength * 100)}%）`);
     }
+
+    const os = offscreenLines(state, settings.injectOffscreen, 8);
+    if (os.length) { L.push(settings.injectOffscreen === 'all' ? '幕后（文学界在主角看不到处发生的事）：' : '主角听说的文坛动静：'); L.push(...os); }
 
     L.push('规则：以上列表之外的书评、报道、私信视为尚不存在，正文不得自行编造新的评论或评论者；主角只能知道已见报或寄给他本人的内容；尚在排期中的文章对任何角色都不可见。');
     return L.join('\n');

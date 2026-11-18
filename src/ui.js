@@ -7,7 +7,6 @@ import {
     READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, backfillBegin, backfillStep, backfillEnd, simulate, impressionAt, IMPRESSION_LABEL, seriesKey,
 } from './engine.js';
 import { buildEvidenceCard, cardText, generateOpinion, OPINION_DIMS, STYLE_CHECKLIST, RESPECT, FOLLOW, draftPersonProfile, draftWorkClaims } from './analysis.js';
-import { mergeKeyed } from './bundle.js';
 import {
     epistolaryAvailable, epistolaryStoryDate, scanLetters, peopleProposals, loadBackup, clearBackup, backupInfo, archiveSource,
     effectiveScope, listArticles, articleBody, letterText,
@@ -21,11 +20,13 @@ import {
 import { extractFromText, loadWorldbookText } from './extract.js';
 import { callLLM } from './llm.js';
 import { Fab } from './fab.js';
+import { buildOffscreen, storeOffscreen, OFF_KINDS } from './offscreen.js';
+import { clog, taskBegin, taskStep, taskEnd, currentTask, allEntries, clearEntries, subscribe, entriesText, LEVELS } from './console.js';
 import { buildConcepts, unclassified, allTags, conceptGroups } from './concepts.js';
 import { planImport, readTextFile, parseFileName } from './txtimport.js';
 import {
     FORMAT_SPEC, FORMAT_RULES, buildExternalPrompt, normalizeBundle, mergeBundles, previewBundle, applyBundle, organize,
-    chatToText, parseJsonl, looksLikeBundle, chunk as chunkMaterial,
+    chatToText, parseJsonl, looksLikeBundle, chunk as chunkMaterial, replaceBundleItem,
 } from './bundle.js';
 
 let app = null; // { refreshInjection, detectFromChat }
@@ -42,6 +43,7 @@ let materials = []; // 一键整理的材料（只在内存里）：{ id, label,
 let orgAbort = null;
 let findQ = {}; // 各页的搜索词
 const foldOpen = new Set(); // 阅读记录里展开的作品
+let bundleEdit = null; // 预览里正在改的条目 { k, i } 或 { all: true }
 let simView = null; // 预演视图：{ kind: 'work'|'person', ... }
 
 const toast = (type, msg) => (globalThis.toastr?.[type] ? globalThis.toastr[type](msg, '报刊回声') : console.log('[报刊回声]', msg));
@@ -204,6 +206,8 @@ const WORK_SPEC = [
     { key: 'outletId', label: '发表刊物', type: 'select', options: optsOf(s => s.outlets) },
     { key: 'pubDate', label: '发表日期', type: 'date', placeholder: 'YYYY-MM-DD' },
     { key: 'endDate', label: '连载结束日', type: 'date', placeholder: 'YYYY-MM-DD，可空' },
+    { key: 'shelf', label: '发表后是否长期有人读', type: 'select', options: { '': '按形式（成书、单行本、小册子会）', yes: '会：书店、图书馆、沙龙里一直流通', no: '不会：过了发表期就没人再找' }, hint: '长期流通的作品，每个月都给还没碰过它的人一次机会；作者近期有话题作时机会更大' },
+    { key: 'shelfUntil', label: '流通到', type: 'date', placeholder: '售罄或绝版日期，可空' },
     { key: 'themes', label: '题材标签', type: 'tags' },
     { key: 'summary', label: '内容摘要', type: 'textarea', rows: 3 },
     { key: 'series', label: '系列', hint: '同系列的作品（如《生者与死亡》各册）读者最想接着找来读。留空则从书名推断，去掉“第一册”“（上）”之类' },
@@ -237,16 +241,30 @@ export function mountUI(appApi) {
       <div class="pe-header" title="按住标题栏拖动窗口；双击恢复默认位置">
         <span class="pe-title">¶ 报刊回声</span>
         <span class="pe-datechip" id="pe-head-date"></span>
-        <span class="pe-busy" id="pe-busy"></span>
+        <span class="pe-busy" id="pe-busy" data-act="con-toggle" title="点开控制台看详细进度"></span>
         <span class="pe-spacer"></span>
+        <button class="pe-close pe-con-btn" data-act="con-toggle" title="控制台：每一步在做什么、调用模型的情况、报错">▤<span class="pe-con-badge" id="pe-con-badge"></span></button>
         <button class="pe-close" data-act="win-reset" title="恢复默认位置和大小">⤢</button>
         <button class="pe-close" data-act="close" title="关闭">✕</button>
       </div>
       <nav class="pe-tabs"></nav>
       <div class="pe-body" id="pe-body"></div>
+      <div class="pe-con" id="pe-con" hidden>
+        <div class="pe-con-head">
+          <b>控制台</b>
+          <span class="pe-con-task" id="pe-con-task"><span class="pe-muted">空闲</span></span>
+          <span class="pe-spacer"></span>
+          <label class="pe-con-opt" title="开始推演、整理、写稿等任务时自动打开控制台"><input type="checkbox" id="pe-con-auto"> 有任务时自动打开</label>
+          <button class="pe-con-b" data-act="con-copy" title="复制全部记录（报错时发给开发者）">复制</button>
+          <button class="pe-con-b" data-act="con-clear">清空</button>
+          <button class="pe-con-b" data-act="con-toggle" title="收起">✕</button>
+        </div>
+        <div class="pe-con-list" id="pe-con-list"></div>
+      </div>
       <div class="pe-resize" title="拖动调整大小"></div>`;
     document.body.appendChild(panel);
     panel.addEventListener('click', onClick);
+    bindConsole(panel);
     panel.addEventListener('change', onChange);
     panel.addEventListener('input', e => { if (e.target.id === 'pe-find') { findQ[tab] = e.target.value; applyFind(); } });
     panel.addEventListener('keydown', e => { if (e.target.id === 'pe-find' && e.key === 'Escape') { e.stopPropagation(); findQ[tab] = ''; e.target.value = ''; applyFind(); } });
@@ -330,6 +348,12 @@ export function togglePanel(force) {
 }
 
 function setBusy(text) {
+    // 同步到控制台：没有进行中的任务就开一个，有就记成其中一步
+    const t = currentTask();
+    if (text) {
+        if (!t || t.ending) taskBegin(text).auto = true;
+        else if (text !== t.label && text !== t.name) { const m = String(text).match(/(\d+)\s*\/\s*(\d+)/); taskStep(text, m ? +m[1] : 0, m ? +m[2] : 0); }
+    } else if (t?.auto) taskEnd();
     busy = text || '';
     const b = document.getElementById('pe-busy');
     if (b) { b.textContent = busy ? `${busy}…` : ''; b.classList.toggle('on', !!busy); }
@@ -448,7 +472,7 @@ export function refresh() {
     if (active && body.contains(active)) active.blur();
     body.innerHTML = (simView ? '' : findBox()) + render(st, s);
     // 统一成酒馆原生控件样式（与书信簿一致）
-    body.querySelectorAll('button:not(.pe-find-x)').forEach(b => b.classList.add('menu_button'));
+    body.querySelectorAll('button:not(.pe-find-x):not(.pe-linkbtn)').forEach(b => b.classList.add('menu_button'));
     body.querySelectorAll('input[type=text], input[type=number], input[type=password], select, textarea').forEach(x => x.classList.add('text_pole'));
     body.scrollTop = y;
     if (!simView) applyFind();
@@ -488,7 +512,7 @@ function overview(st, s) {
         <div class="pe-hero-sub">${d ? h(weekdayZh(d)) + ' · ' : ''}${h(st.era?.place || '地点未设定')} · 年代档案 ${era ? `<span class="pe-ok">已生成</span>` : `<a data-tab-go="era" class="pe-link">未生成，去生成</a>`}</div>
       </div>
       <div class="pe-hero-side">
-        ${!d ? '<div class="pe-muted">聊天里出现日期时会自动识别，也可以在下面手动设定。</div>' : ''}
+        ${!d ? '<div class="pe-muted">聊天里出现日期时会自动识别，也可以在下面手动设定。</div>' : `<button class="menu_button pe-primary pe-big" data-act="sim-now" title="所有作品 × 所有人物，推演到${st.detectedDate && st.detectedDate > d ? '识别到的 ' + h(st.detectedDate) : '当前日期'}；新加的作品和人物、成书的长尾都会补上。之后按设置让 AI 补写幕后（会先告诉你调用几次）">▶ 一键推演到${st.detectedDate && st.detectedDate > d ? ' ' + h(st.detectedDate) : '今天'}</button>`}
         ${st.detectedDate ? `<div class="pe-callout">识别到新日期 <b>${h(st.detectedDate)}</b><button class="pe-primary" data-act="advance-detected">推进到这一天</button></div>` : ''}
         ${epiD && epiD !== d && (!d || epiD > d) ? `<div class="pe-callout">书信簿剧情日期 <b>${h(epiD)}</b><button class="pe-primary" data-act="epi-date-adopt">跟上</button></div>` : ''}
       </div>
@@ -510,6 +534,8 @@ function overview(st, s) {
 
     <h4>笔名声誉 <small class="pe-muted">只由已入账的公开反响改变</small></h4>
     ${st.pennames.length ? `<div class="pe-table-wrap"><table class="pe-table"><tr><th></th>${Object.values(CIRCLES).map(c => `<th>${c}</th>`).join('')}</tr>${pens}</table></div>` : '<div class="pe-empty-sm">还没有笔名。<a class="pe-link" data-tab-go="works">去添加</a></div>'}
+
+    ${offscreenBlock(st)}
 
     <h4>坊间传闻</h4>
     ${rumors || '<div class="pe-empty-sm">暂无。</div>'}
@@ -802,7 +828,7 @@ function queue(st) {
         ${fieldHtml({ key: 'summary', label: '内容概要', type: 'textarea', rows: 2 }, '')}
         ${fieldHtml({ key: 'approved', label: '直接入账', type: 'checkbox' }, true)}
       </div>
-      <button class="pe-primary" data-act="manual-add">录入</button>
+      <div class="pe-actions"><div class="pe-actions-extra"></div><button class="pe-primary" data-act="manual-add">录入</button></div>
     </details>`;
 }
 
@@ -833,7 +859,8 @@ function reading(st) {
     const visible = r => !r.contactDate || !st.currentDate || r.contactDate <= st.currentDate;
     const blocks = Object.entries(byWork).map(([wid, list]) => {
         const w = byId(st.works, wid);
-        const shown = list.filter(visible);
+        const vis = list.filter(visible);
+        const shown = vis.filter(r => r.read !== 'none' || !vis.some(x => x !== r && x.personId === r.personId && x.read !== 'none'));
         const cnt = k => shown.filter(r => r.read === k).length;
         const rows = shown.filter(r => r.read !== 'none').sort((a, b) => cmp(a.readDate || a.contactDate || '9', b.readDate || b.contactDate || '9')).map(r => {
             const p = byId(st.persons, r.personId);
@@ -875,7 +902,7 @@ function reading(st) {
         ${fieldHtml({ key: 'read', label: '读到什么程度', type: 'select', options: { finished: '读完', skimmed: '读了一部分' } }, 'finished')}
         ${fieldHtml({ key: 'note', label: '依据' }, '')}
       </div>
-      <button class="pe-primary" data-act="manual-read">记录</button>
+      <div class="pe-actions"><div class="pe-actions-extra"></div><button class="pe-primary" data-act="manual-read">记录</button></div>
     </section>`;
 }
 
@@ -988,8 +1015,9 @@ function listBlock(title, kind, list, spec, st, labelFn, styleFn = null, extra =
           ${formHtml(spec, obj, st)}
           ${kind === 'person' ? tableEditor('stances', obj.stances, 'draft-person', obj.id) + tableEditor('stylePrefs', obj.stylePrefs) + relationsEditor(obj, st) : ''}
           ${kind === 'work' ? tableEditor('claims', obj.claims, 'draft-claims', obj.id) : ''}
-          <div class="pe-row"><button class="pe-primary" data-act="save-item" data-kind="${kind}">保存</button><button data-act="cancel-edit">取消</button>
-          ${kind === 'work' && !isNew ? `<button data-act="reroll-work" data-id="${obj.id}" title="资料改动后，重新推演尚未批准的回应">按新资料重推</button><button data-act="gen-card" data-id="${obj.id}" title="先保存原文，再生成">生成证据卡</button>` : ''}</div>
+          <div class="pe-actions">
+            <div class="pe-actions-extra">${kind === 'work' && !isNew ? `<button data-act="reroll-work" data-id="${obj.id}" title="资料改动后，重新推演尚未批准的回应">按新资料重推</button><button data-act="gen-card" data-id="${obj.id}" title="先保存原文，再生成">生成证据卡</button>` : ''}</div>
+            <button data-act="cancel-edit">取消</button><button class="pe-primary" data-act="save-item" data-kind="${kind}">保存</button></div>
           ${kind === 'work' && obj?.evidence ? `<details><summary>证据卡（${h(obj.evidence.builtAt?.slice(0, 10) || '')}，${(obj.evidence.keyPoints || []).length} 条${obj.evidence.stale ? '，原文已更新，建议重新生成' : ''}）</summary><div class="pe-text">${h(cardText(obj.evidence, 6000)).replace(/\n/g, '<br>')}</div></details>` : ''}</div>`; };
     return `
     <section>
@@ -1012,7 +1040,7 @@ function txtImportBlock(st) {
       <div class="pe-muted">按文件名识别：<b>作品名-刊物名1890-4-12.txt</b>。日期取首次发表（连载写第一期）；“小册子/单行本”会当作形式而不是刊物；写“1890-6中”的记为约略日期；文件名开头的 0、AA 之类前缀会去掉；没有日期的当作未发表的稿子，默认跳过。也可以把文件直接拖到这里。</div>
       <div class="pe-toolbar">
         <label class="menu_button pe-file pe-primary">选择 txt 文件（可多选）<input type="file" id="pe-txt-files" multiple accept=".txt,.md,text/plain" hidden></label>
-        ${txtPlan.length ? `<button class="pe-primary" data-act="txt-commit">导入 ${txtPlan.filter(r => r.action !== 'skip').length} 个</button><button data-act="txt-clear">清空</button>
+        ${txtPlan.length ? `<button data-act="txt-clear">清空</button><button class="pe-primary" data-act="txt-commit">导入 ${txtPlan.filter(r => r.action !== 'skip').length} 个</button>
         <label class="pe-check-inline"><input type="checkbox" id="pe-txt-overwrite" ${txtOverwrite ? 'checked' : ''}> 更新已有作品时，也用文件名覆盖它的日期、刊物和形式</label>` : ''}
       </div>
       ${txtPlan.map((r, i) => `<div class="pe-card pe-txt-row ${r.action === 'skip' ? 'pe-txt-skip' : ''}">
@@ -1238,7 +1266,7 @@ function era(st, s) {
           ${prof ? '<details class="pe-more-acts pe-inline-more"><summary>更多</summary><button data-act="era-propose">刊物与评论家加入待合并</button><button data-act="era-edit">编辑 JSON</button><button data-act="era-clear">清除</button></details>' : ''}
         </div>
       </div>
-      ${editing?.kind === 'era' ? `<textarea id="pe-era-json" rows="16">${h(JSON.stringify(prof, null, 2))}</textarea><div class="pe-row"><button class="pe-primary" data-act="era-save-json">保存</button><button data-act="cancel-edit">取消</button></div>` : ''}
+      ${editing?.kind === 'era' ? `<textarea id="pe-era-json" rows="16">${h(JSON.stringify(prof, null, 2))}</textarea><div class="pe-actions"><div class="pe-actions-extra"></div><button data-act="cancel-edit">取消</button><button class="pe-primary" data-act="era-save-json">保存</button></div>` : ''}
       ${prof && editing?.kind !== 'era' ? eraView(prof) : ''}
       <details class="pe-fold"><summary>检索的维基页面（每行 语言:标题，可改）</summary><textarea id="pe-wiki-titles" rows="5">${h(titles)}</textarea>
       <div class="pe-muted">同年份的页面会自动剪掉当前故事日期之后的月份和条目，避免剧透未来。</div></details>
@@ -1289,7 +1317,7 @@ function organizerBlock(st) {
       ${materials.length ? `<div class="pe-org-list">${materials.map(m => `<div class="pe-card pe-card-slim"><div class="pe-card-main"><span class="pe-chip pe-chip-layer">${h(m.kind)}</span> ${h(m.label)} <span class="pe-muted">${m.text.length.toLocaleString()} 字 · ${chunkMaterial(m.text).length} 段</span></div>
           <div class="pe-card-actions pe-card-actions-row"><button class="pe-mini" data-act="org-del" data-id="${m.id}">移除</button></div></div>`).join('')}</div>
         <div class="pe-callout ${calls > 40 ? 'pe-callout-warn' : 'pe-callout-accent'}">共 ${chars.toLocaleString()} 字，约 <b>${calls}</b> 次模型调用。${calls > 40 ? '材料很长：用插件逐段整理会比较慢、耗费也多，可以考虑下面的“用外部 AI 整理”，长上下文的聊天 AI 一次就能读完。' : ''}
-          ${orgAbort ? '<button data-act="org-stop">停止</button>' : `<button class="pe-primary" data-act="org-run">开始整理</button><button data-act="org-clear">清空材料</button>`}</div>` : ''}
+          ${orgAbort ? '<button data-act="org-stop">停止</button>' : `<button data-act="org-clear">清空材料</button><button class="pe-primary" data-act="org-run">开始整理</button>`}</div>` : ''}
       ${txtPlan.length ? `<div class="pe-muted">另有 ${txtPlan.length} 个作品原文 txt 已放进 <a class="pe-link" data-tab-go="works">作品页</a> 的导入列表。</div>` : ''}
     </section>
 
@@ -1311,7 +1339,7 @@ function bundlePreview(st) {
     const kinds = Object.keys(KIND_LABEL).filter(k => (pv.counts[k]?.new || 0) + (pv.counts[k]?.update || 0) > 0);
     return `
     <section class="pe-bundle">
-      <h4>整理结果预览 <span class="pe-spacer"></span><button class="pe-primary" data-act="bundle-apply">应用</button><button data-act="bundle-download">下载整理包</button><button data-act="bundle-drop">丢弃</button></h4>
+      <h4>整理结果预览 <span class="pe-spacer"></span><button data-act="bundle-drop">丢弃</button><button data-act="bundle-download">下载整理包</button><button class="pe-primary" data-act="bundle-apply">应用</button></h4>
       <div class="pe-muted">确认后才会写进数据。按名字合并：已有的只补充和更新，不会删除你填过的内容；导入的反响记为“已发生”，直接入账。</div>
       ${b.storyDate ? `<div class="pe-callout">故事日期 <b class="pe-num">${h(b.storyDate)}</b>${b.place ? ` · ${h(b.place)}` : ''}
         <select id="pe-bundle-datemode"><option value="set">直接设为当前日期（之前的反响以整理包为准，不再推演）</option><option value="none">不改日期</option></select></div>` : ''}
@@ -1321,9 +1349,19 @@ function bundlePreview(st) {
         <div class="pe-muted">勾选：人物的关注、欣赏、反感、供稿与常读刊物、熟人关系，刊物的刊期和倾向，作品的题材，都换成新版的写法（不勾选则只补充、不替换，旧标签和旧关系会留着）；以前导入的阅读记录按新版重建${pv.stale.length ? `；并删除以前导入、但新版已经没有的 ${pv.stale.length} 条已发生反响` : ''}。你手动录入的反响不受影响。</div>
         ${pv.stale.length ? `<ul class="pe-era-ul">${pv.stale.slice(0, 20).map(x => `<li>${h(x)}</li>`).join('')}</ul>` : ''}</div></div>` : ''}
       ${pv.warnings.length ? `<div class="pe-callout pe-callout-warn"><div><b>注意（${pv.warnings.length}）</b><ul class="pe-era-ul">${pv.warnings.slice(0, 30).map(w => `<li>${h(w)}</li>`).join('')}</ul></div></div>` : ''}
-      ${kinds.map(k => `<details class="pe-era-sec"><summary>${KIND_LABEL[k]} <span class="pe-count pe-count-dim">${pv.items[k]?.length ?? pv.counts[k].new}</span></summary>
-        <div class="pe-era-chips pe-era-chips-wrap">${(pv.items[k] || (b[k] || []).map(x => ({ name: x.text || x.title, exists: false }))).map(x => `<span class="pe-chip ${x.exists ? '' : 'pe-chip-layer'}" title="${x.exists ? '已有，将更新' : '新建'}">${h(truncate(x.name || '', 50))}</span>`).join('')}</div></details>`).join('')}
-      <div class="pe-toolbar"><button class="pe-primary" data-act="bundle-apply">应用整理结果${txtPlan.length ? `（并导入 ${txtPlan.filter(r => r.action !== 'skip').length} 个作品原文）` : ''}</button></div>
+      <div class="pe-muted">发现错的地方：展开下面的分类，点“改”直接修改这一条，或点 ✕ 删掉。改名字时，整理包里其他地方的引用会一起改；改成和另一条同名会自动合并。<button class="pe-linkbtn" data-act="bundle-edit-all">直接编辑整个整理包的 JSON</button></div>
+      ${bundleEdit?.all ? `<div class="pe-editor"><div class="pe-editor-head">编辑整个整理包（JSON）</div><textarea id="pe-bundle-json" class="text_pole" rows="18" spellcheck="false">${h(JSON.stringify(Object.fromEntries(Object.entries(b).filter(([k]) => k !== 'warnings')), null, 2))}</textarea>
+        <div class="pe-actions"><div class="pe-actions-extra"></div><button data-act="bitem-cancel">取消</button><button class="pe-primary" data-act="bundle-save-json">保存</button></div></div>` : ''}
+      ${kinds.map(k => `<details class="pe-era-sec" ${bundleEdit?.k === k ? 'open' : ''}><summary>${KIND_LABEL[k]} <span class="pe-count pe-count-dim">${(b[k] || []).length}</span></summary>
+        <div class="pe-blist">${(b[k] || []).map((x, i) => {
+            const info = pv.items[k]?.[i] || { name: x.text || x.title || x.name, exists: false };
+            const editingThis = bundleEdit && bundleEdit.k === k && bundleEdit.i === i;
+            return `<div class="pe-bitem ${editingThis ? 'pe-bitem-on' : ''}"><span class="pe-chip ${info.exists ? '' : 'pe-chip-layer'}">${info.exists ? (k === 'reactions' ? '已有' : '更新') : '新建'}</span>
+              <span class="pe-bitem-name">${h(truncate(info.name || '', 90))}</span>${bitemHint(k, x)}
+              <span class="pe-spacer"></span><button class="pe-mini" data-act="bitem-edit" data-k="${k}" data-i="${i}">改</button><button class="pe-mini" data-act="bitem-del" data-k="${k}" data-i="${i}" title="从整理包里删掉这一条">✕</button></div>
+              ${editingThis ? bitemEditor(k, x) : ''}`;
+        }).join('')}</div></details>`).join('')}
+      <div class="pe-toolbar pe-actions"><div class="pe-actions-extra"></div><button class="pe-primary" data-act="bundle-apply">应用整理结果${txtPlan.length ? `（并导入 ${txtPlan.filter(r => r.action !== 'skip').length} 个作品原文）` : ''}</button></div>
     </section>`;
 }
 
@@ -1361,7 +1399,8 @@ async function addOrgFiles(files) {
                 continue;
             }
             const pf = parseFileName(f.name);
-            if (pf.date) {
+            const bundleHit = !pf.date && (st.pendingBundle?.works || []).some(w => planImport({ works: [{ id: 'x', title: w.title }], outlets: [] }, f.name, '').action === 'update');
+            if (pf.date || planImport(st, f.name, text).action === 'update' || bundleHit) {
                 txtPlan = txtPlan.filter(r => r.fileName !== f.name);
                 txtPlan.push({ ...planImport(st, f.name, text), text });
                 notes.push(`${f.name}：按作品原文处理`);
@@ -1458,6 +1497,10 @@ const SETTINGS_SPEC = [
     { key: 'injectDepth', label: '注入深度', type: 'number' },
     { key: 'injectMaxItems', label: '注入最近几条反响', type: 'number' },
     { key: 'injectEraNotes', label: '注入时附带时代约束', type: 'checkbox' },
+    { key: 'aiFill', label: '一键推演后让 AI 补完', type: 'select', options: { off: '不调用 AI，只推演', brief: '补写幕后（1 次）', opinions: '补写幕后 + 新读者的私下看法', all: '再加上给新入账的反响写稿' }, hint: '推演定下谁读了、态度如何；AI 再补写聊天里没写到、主角不知道的事。开始前会告诉你要调用几次' },
+    { key: 'aiFillMax', label: '每次最多调用 AI', type: 'number', hint: '看法和写稿按重要程度排序，超出的留到下次或手动点' },
+    { key: 'aiFillOnAuto', label: '聊天里日期自动推进时也补完', type: 'checkbox', hint: '每次日期变化都会调用 AI，比较耗 token；不弹确认' },
+    { key: 'injectOffscreen', label: '幕后内容注入主对话', type: 'select', options: { off: '不注入', known: '只注入主角能知道的', all: '全部注入（标明主角不知道，供叙事作暗线）' } },
     { key: 'apiMode', label: '写稿/检索用的模型', type: 'select', options: { st: '酒馆当前连接', custom: '独立 OpenAI 兼容 API' } },
     { key: 'apiUrl', label: '独立 API 地址', placeholder: 'https://…/v1' },
     { key: 'apiKey', label: '独立 API 密钥', type: 'password' },
@@ -1476,7 +1519,8 @@ const SET_GROUPS = [
     { title: '基本', desc: '插件开关与审核方式', keys: ['enabled', 'autoApprove'] },
     { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvance', 'epiSyncDate', 'maxJumpDays', 'headChars'] },
     { title: '推演', desc: '只影响概率，不调用模型', keys: ['intensity', 'rumorHalfLife'], extra: 'layerMult' },
-    { title: '注入主对话', desc: '让角色“知道”报上登了什么', keys: ['injectEnabled', 'injectPosition', 'injectDepth', 'injectMaxItems', 'injectEraNotes'] },
+    { title: 'AI 补完', desc: '一键推演之后，让 AI 补写聊天里没写到、主角不知道的事', keys: ['aiFill', 'aiFillMax', 'aiFillOnAuto'] },
+    { title: '注入主对话', desc: '让角色“知道”报上登了什么', keys: ['injectEnabled', 'injectPosition', 'injectDepth', 'injectMaxItems', 'injectEraNotes', 'injectOffscreen'] },
     { title: '写稿与模型', desc: '写书评正文、生成看法、整理材料、归类标签时用', keys: ['apiMode', 'apiUrl', 'apiKey', 'apiModel', 'temperature', 'maxTokens', 'outputLanguage', 'realPersonPolicy'], extra: 'apiTest' },
     { title: '年代资料', desc: '生成年代档案时检索的资料', keys: ['wikiEnabled', 'wikiLangs'] },
 ];
@@ -1486,6 +1530,7 @@ const SET_DEPS = {
     injectMaxItems: s => s.injectEnabled, injectEraNotes: s => s.injectEnabled,
     apiUrl: s => s.apiMode === 'custom', apiKey: s => s.apiMode === 'custom', apiModel: s => s.apiMode === 'custom',
     wikiLangs: s => s.wikiEnabled, autoAdvance: s => s.autoDetectDate,
+    aiFillMax: s => s.aiFill && s.aiFill !== 'off', aiFillOnAuto: s => s.aiFill && s.aiFill !== 'off', injectOffscreen: s => s.injectEnabled,
 };
 
 function setControl(f, val) {
@@ -1598,6 +1643,7 @@ async function onClick(e) {
     if (go) { tab = go; editing = null; simView = null; refresh(); const b = document.getElementById('pe-body'); if (b) b.scrollTop = 0; return; }
     const act = btn.dataset.act;
     if (!act) return;
+    if (act.startsWith('con-')) { conAction(act); return; }
     if (act === 'find-clear') { findQ[tab] = ''; const i = document.getElementById('pe-find'); if (i) { i.value = ''; i.focus(); } applyFind(); return; }
     if (act === 'fold-all') {
         const open = btn.dataset.open === '1';
@@ -1657,10 +1703,11 @@ async function onClick(e) {
             break;
         }
         case 'bundle-download': download(`报刊回声整理包_${st.pendingBundle?.storyDate || ''}.json`, JSON.stringify(st.pendingBundle, null, 2)); break;
-        case 'bundle-drop': if (confirm('丢弃这份整理结果？')) { st.pendingBundle = null; commit(); } break;
+        case 'bundle-drop': if (confirm('丢弃这份整理结果？')) { st.pendingBundle = null; bundleEdit = null; commit(); } break;
         case 'bundle-apply': {
             const b = st.pendingBundle;
             if (!b) break;
+            bundleEdit = null;
             const kinds = [...document.querySelectorAll('.pe-bundle-kind')].filter(c => c.checked).map(c => c.value);
             const dateMode = $('#pe-bundle-datemode')?.value || 'set';
             const rep = applyBundle(st, b, { kinds, dateMode, settings: s, era: getEra(), sync: !!$('#pe-bundle-sync')?.checked });
@@ -1668,7 +1715,7 @@ async function onClick(e) {
             syncEraYear(st);
             if (txtPlan.length) {
                 // 整理包可能刚建好作品：重新匹配一次，免得重复新建
-                txtPlan = txtPlan.map(r => (r.action === 'new' ? { ...r, ...pickUpdate(st, r) } : r));
+                txtPlan = txtPlan.map(r => (r.action === 'new' || (r.action === 'skip' && r.isDraft) ? { ...r, ...pickUpdate(st, r) } : r));
                 commitTxt(st);
             }
             logLine(st, `应用整理包：${kinds.map(k => KIND_LABEL[k]).join('、')}；自动新建 ${rep.created.length}，跳过 ${rep.skipped.length}`);
@@ -1741,15 +1788,57 @@ async function onClick(e) {
             commit(`已开始：共 ${segs.length} 段。点“推演下一段”逐段推进`);
             break;
         }
+        case 'sim-now': {
+            if (st.backfillRun) { btn.dataset.act = 'bf-all'; return onClick({ target: Object.assign(btn, {}) }).finally(() => { btn.dataset.act = 'sim-now'; }); }
+            const early = st.works.filter(w => w.pubDate && st.currentDate && cmp(w.pubDate, st.currentDate) < 0);
+            const engineRecs = (st.receptions || []).filter(r => r.origin !== 'manual').length;
+            if (!st.backfilledAt && early.length && !engineRecs) {
+                if (!confirm(`还没推演过 ${early.length} 部早先作品从发表到 ${st.currentDate} 的经过。现在一次补完（已导入的记录视为当时的全部公开报道和来信，只补阅读、私下看法和后续反响）？`)) break;
+                setBusy('一键推演：从首次发表补到今天');
+                let r;
+                try { r = backfill(st, s, getEra(), { mode: 'hidden' }); } finally { setBusy(''); }
+                st.backfilledAt = { at: new Date().toISOString(), mode: 'hidden', to: r.to };
+                logLine(st, `一键推演（回溯）${r.from} → ${r.to}：读完 ${r.finished}、读了部分 ${r.skimmed}、接触未读 ${r.ignored}`);
+                commit(`推演完成：${r.finished + r.skimmed} 人次读过作品${r.candidates ? `，${r.candidates} 条反响待审核` : ''}`);
+                await aiFill(st, s, { from: null, to: st.currentDate, fresh: null });
+                break;
+            }
+            const target = st.detectedDate && cmp(st.detectedDate, st.currentDate) > 0 ? st.detectedDate : st.currentDate;
+            const fromDate = lastFillTo(st) || null; // 第一次补完：从头算起
+            const beforeRecs = new Set((st.receptions || []).map(x => x.id));
+            setBusy('一键推演到 ' + target);
+            let r;
+            try { r = doAdvance(st, s, target); if (target === st.detectedDate) st.detectedDate = null; } finally { setBusy(''); }
+            if (r) toast(r.receptions ? 'success' : 'info', r.receptions ? `推演到 ${target}：新增 ${r.receptions} 条阅读记录${r.shelf ? `（其中成书长尾 ${r.shelf}）` : ''}${r.newCandidates.length ? `，${r.newCandidates.length} 条新反响` : ''}` : `推演已是最新：到 ${target} 为止没有新的人读到作品`);
+            refresh();
+            await aiFill(st, s, { from: fromDate, to: target, fresh: new Set((st.receptions || []).filter(x => !beforeRecs.has(x.id)).map(x => x.id)) });
+            break;
+        }
+        case 'bitem-edit': case 'bitem-del': case 'bitem-save': case 'bitem-cancel': case 'bundle-edit-all': case 'bundle-save-json': bundleItemAction(act, st, btn); break;
+        case 'os-del': { st.offscreen = (st.offscreen || []).filter(d => d.id !== btn.dataset.id); commit('已删除这期幕后'); break; }
+        case 'os-redo': {
+            const ds = (st.offscreen || []).slice().sort((a, b) => cmp(a.to, b.to));
+            const last = ds[ds.length - 1];
+            if (!last || !confirm(`重写 ${last.from || '起点'} → ${last.to} 这一期幕后？原来的会被替换。`)) break;
+            const oldList = st.offscreen;
+            st.offscreen = oldList.filter(d => d !== last);
+            const n0 = st.offscreen.length;
+            await aiFill(st, { ...s, aiFill: 'brief' }, { from: last.from, to: last.to, fresh: null, force: true, auto: true });
+            if (st.offscreen.length === n0) { st.offscreen = oldList; commit('重写失败，保留原来的一期'); }
+            break;
+        }
         case 'bf-next':
         case 'bf-all': {
             const run = st.backfillRun;
             if (!run) break;
             setBusy('回溯推演');
             try {
-                for (const g of run.segments) {
+                const segs = run.segments;
+                for (const [gi, g] of segs.entries()) {
                     if (g.result) continue;
+                    taskStep(`回溯第 ${gi + 1} 段：推到 ${g.endDate}`, gi + 1, segs.length);
                     const r = backfillStep(st, s, getEra(), g.endDate);
+                    clog('info', `第 ${gi + 1} 段 → ${g.endDate}：读完 ${r.finished}，读了部分 ${r.skimmed}，接触未读 ${r.ignored}${r.candidates ? `，回溯候选 ${r.candidates}` : ''}`, (r.reads || []).map(x => `${byId(st.persons, x.personId)?.name || '?'} ${x.read === 'finished' ? '读完' : '读了部分'}《${byId(st.works, x.workId)?.title || ''}》`).join('\n') || null);
                     g.result = { ...r, reads: (r.reads || []).slice(0, 60) };
                     if (act === 'bf-next') break;
                 }
@@ -1895,7 +1984,12 @@ async function onClick(e) {
         case 'write': await doWrite(st, s, ev); break;
         case 'write-all': {
             const list = st.ledger.filter(x => x.status === 'approved' && !x.text?.body && x.layer !== 'reader_letters' && x.layer !== 'mentions');
-            for (const x of list) { await doWrite(st, s, x, true); }
+            taskBegin(`逐条写稿（${list.length} 条）`);
+            for (const [i, x] of list.entries()) {
+                taskStep(`写稿：${x.date} ${byId(st.persons, x.personId)?.name || x.personName || ''} · ${LAYERS[x.layer]?.label || x.layer}${x.workId ? ` 《${byId(st.works, x.workId)?.title || ''}》` : ''}`, i + 1, list.length);
+                await doWrite(st, s, x, true);
+            }
+            taskEnd();
             commit(`写稿完成 ${list.length} 条`);
             break;
         }
@@ -2219,9 +2313,11 @@ async function onClick(e) {
         default: break;
         }
     } catch (err) {
+        clog('error', String(err.message || err), err.stack || null);
+        const t = currentTask(); if (t) { t.failed = true; taskEnd(); }
         setBusy('');
         console.error('[报刊回声]', err);
-        toast('error', String(err.message || err));
+        toast('error', String(err.message || err) + '（详情见控制台 ▤）');
     }
 }
 
@@ -2242,10 +2338,19 @@ export function doAdvance(st, s, d) {
     if (st.backfillRun) { toast('warning', '回溯推演进行中，先在“概览”完成或放弃回溯，再推进日期'); return null; }
     if (st.currentDate && cmp(d, st.currentDate) < 0) return toast('warning', '日期不能倒退。若需要更正，请用“设为当前（不推演）”');
     const from = st.currentDate;
+    const beforeRecs = new Set((st.receptions || []).map(r => r.id));
+    const own = !currentTask();
+    if (own) taskBegin(`推演 ${from || '起点'} → ${d}`);
     lastReport = advanceTo(st, d, s, getEra());
+    const fresh = (st.receptions || []).filter(r => !beforeRecs.has(r.id));
+    const recLine = r => `${byId(st.persons, r.personId)?.name || '?'} · 《${byId(st.works, r.workId)?.title || '?'}》 · ${CHANNELS[r.channel] || '没接触到'}${r.contactDate ? ' ' + r.contactDate : ''} → ${READ_STATES[r.read] || r.read || '—'}${r.readDate ? ' ' + r.readDate : ''}${r.strength ? `，${['偏批评', '参半', '偏肯定'][r.polarity + 1]}，${STRENGTH[r.strength]}` : ''}${r.expression ? `，${EXPRESSION[r.expression] || r.expression}` : ''}`;
+    const readNew = fresh.filter(r => r.read && r.read !== 'none');
+    clog('info', `推演 ${from || '起点'} → ${d}：新轮到的“人物×作品”${lastReport.diag?.run ?? 0} 组，新增阅读记录 ${fresh.length} 条（其中接触到 ${readNew.length}）${lastReport.shelf ? `，成书长尾 ${lastReport.shelf}` : ''}；新反响 ${lastReport.newCandidates.length}（自动入账 ${lastReport.autoApproved?.length || 0}），新排期 ${lastReport.scheduled}，到期揭晓 ${lastReport.revealed.length}`,
+        readNew.length || lastReport.newCandidates.length ? [...readNew.map(recLine), ...(lastReport.newCandidates.length ? ['', '新反响：', ...lastReport.newCandidates.map(e => `${e.date} ${byId(st.persons, e.personId)?.name || e.personName || ''} ${LAYERS[e.layer]?.label || e.layer} 《${byId(st.works, e.workId)?.title || ''}》 ${e.status === 'approved' ? '（自动入账）' : '（待审核）'}`)] : [])].join('\n') : null);
+    if (own) taskEnd();
     syncEraYear(st);
     const auto = lastReport.autoApproved?.length || 0;
-    logLine(st, `推进 ${from || '（起点）'} → ${d}：新增候选 ${lastReport.newCandidates.length}，自动通过 ${auto}，新排期 ${lastReport.scheduled}，揭晓 ${lastReport.revealed.length}`);
+    logLine(st, `推进 ${from || '（起点）'} → ${d}：新增候选 ${lastReport.newCandidates.length}，自动通过 ${auto}，新排期 ${lastReport.scheduled}，揭晓 ${lastReport.revealed.length}${lastReport.shelf ? `，成书长尾新读者 ${lastReport.shelf}` : ''}`);
     commit();
     const pending = lastReport.newCandidates.filter(x => x.status === 'candidate').length;
     if (pending || auto) toast('info', `故事推进到 ${d}：${pending} 条反响待审核${auto ? `，${auto} 条次要反响已自动记入` : ''}${lastReport.reapplied ? `（${lastReport.reapplied} 条沿用了你之前的审核）` : ''}`);
@@ -2303,3 +2408,223 @@ function download(name, text) {
 }
 
 export { syncEraYear };
+
+
+// ———————————— 控制台 ————————————
+let conUnread = 0;
+let conTimer = null;
+const conTime = t => new Date(t).toLocaleTimeString('zh-CN', { hour12: false });
+const conIcon = { task: '▶', step: '·', ai: '✦', ok: '✓', info: 'i', warn: '!', error: '✕' };
+function conEntryHtml(e) {
+    const head = `<span class="pe-con-time">${conTime(e.t)}</span><span class="pe-con-lv">${conIcon[e.level] || '·'} ${LEVELS[e.level] || e.level}</span><span class="pe-con-text">${h(e.text)}</span>`;
+    return e.detail
+        ? `<details class="pe-con-e lv-${e.level}"><summary>${head}</summary><pre>${h(e.detail)}</pre></details>`
+        : `<div class="pe-con-e lv-${e.level}">${head}</div>`;
+}
+function conOpen(open) {
+    const c = document.getElementById('pe-con');
+    if (!c) return;
+    c.hidden = !open;
+    document.getElementById('pe-panel')?.classList.toggle('pe-con-on', open);
+    if (open) { conUnread = 0; conBadge(); const l = document.getElementById('pe-con-list'); if (l) l.scrollTop = l.scrollHeight; }
+}
+function conBadge() {
+    const b = document.getElementById('pe-con-badge');
+    if (b) { b.textContent = conUnread ? String(conUnread) : ''; b.classList.toggle('on', !!conUnread); }
+}
+function conTaskLine() {
+    const el = document.getElementById('pe-con-task');
+    if (!el) return;
+    const t = currentTask();
+    if (!t || t.ending) { el.innerHTML = '<span class="pe-muted">空闲</span>'; return; }
+    const sec = Math.round((Date.now() - t.start) / 1000);
+    el.innerHTML = `<span class="pe-con-spin"></span><b>${h(t.name)}</b>${t.label && t.label !== t.name ? ` <span class="pe-muted">· ${h(t.label)}</span>` : ''}
+      ${t.n ? `<span class="pe-con-bar"><i style="width:${Math.round(t.i / t.n * 100)}%"></i></span><span class="pe-muted">${t.i}/${t.n}</span>` : ''}
+      <span class="pe-muted">${sec} 秒${t.ai ? ` · 模型 ${t.ai} 次` : ''}</span>`;
+}
+function bindConsole(panel) {
+    const list = panel.querySelector('#pe-con-list');
+    list.innerHTML = allEntries().map(conEntryHtml).join('');
+    const auto = panel.querySelector('#pe-con-auto');
+    auto.checked = getSettings().consoleAuto !== false;
+    auto.addEventListener('change', () => { getSettings().consoleAuto = auto.checked; saveSettings(); });
+    subscribe((e) => {
+        if (!e) { list.innerHTML = ''; conTaskLine(); return; }
+        const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+        list.insertAdjacentHTML('beforeend', conEntryHtml(e));
+        while (list.children.length > 600) list.firstElementChild.remove();
+        if (atBottom) list.scrollTop = list.scrollHeight;
+        const closed = document.getElementById('pe-con')?.hidden;
+        if (e.level === 'task' && closed && getSettings().consoleAuto !== false && !document.getElementById('pe-panel')?.classList.contains('pe-hidden')) conOpen(true);
+        else if (closed && (e.level === 'error' || e.level === 'warn')) { conUnread++; conBadge(); }
+        conTaskLine();
+        // 有任务时每秒刷新耗时；空闲就停，不留常驻定时器
+        if (currentTask() && !conTimer) conTimer = setInterval(() => { conTaskLine(); if (!currentTask()) { clearInterval(conTimer); conTimer = null; } }, 1000);
+    });
+
+    // 插件自己的未捕获错误也记下来
+    const mine = s => /press-echo|st-press-echo/i.test(String(s || ''));
+    window.addEventListener('error', ev => { if (mine(ev.filename) || mine(ev.error?.stack)) clog('error', `未捕获的错误：${ev.message}`, ev.error?.stack || `${ev.filename}:${ev.lineno}`); });
+    window.addEventListener('unhandledrejection', ev => { const r = ev.reason; if (mine(r?.stack)) clog('error', `未处理的异常：${r?.message || r}`, r?.stack || null); });
+}
+function conAction(act) {
+    if (act === 'con-toggle') conOpen(document.getElementById('pe-con')?.hidden);
+    else if (act === 'con-clear') clearEntries();
+    else if (act === 'con-copy') copyText(entriesText() || '（控制台是空的）', '控制台记录');
+}
+
+
+// ———————————— AI 补完：一键推演之后 ————————————
+
+/** 上一期幕后补到哪天（force 时取再上一期，用于“重写最近一期”） */
+function lastFillTo(st, prev = false) {
+    const ds = (st.offscreen || []).slice().sort((a, b) => cmp(a.to, b.to));
+    if (prev) return ds.length >= 2 ? ds[ds.length - 2].to : ds[0]?.from || null;
+    return ds.length ? ds[ds.length - 1].to : null;
+}
+function chatTail(n = 8, max = 5000) {
+    const c = globalThis.SillyTavern?.getContext?.();
+    const msgs = (c?.chat || []).filter(m => m?.mes && !m.is_system).slice(-n);
+    let t = msgs.map(m => `${m.name || ''}：${m.mes}`).join('\n\n');
+    if (t.length > max) t = '……' + t.slice(-max);
+    return t;
+}
+/** 选出值得生成看法的阅读：想法强烈、真实人物、私交深、读完的优先 */
+function opinionQueue(st, fresh, to) {
+    return (st.receptions || [])
+        .filter(r => (!fresh || fresh.has(r.id)) && ['skimmed', 'finished'].includes(r.read) && !r.opinion && r.strength && r.strength !== 'none'
+            && (!r.readDate || cmp(r.readDate, to) <= 0) && byId(st.works, r.workId) && byId(st.persons, r.personId))
+        .map(r => { const p = byId(st.persons, r.personId); return { r, score: (r.strength === 'strong' ? 3 : 1) + (p.real ? 1 : 0) + (p.closeness || 0) * 0.7 + (r.read === 'finished' ? 0.5 : 0) + (r.expression && r.expression !== 'silent' ? 1.5 : 0) }; })
+        .sort((a, b) => b.score - a.score).map(x => x.r);
+}
+async function aiFill(st, s, { from, to, fresh, force = false, auto = false }) {
+    const mode = s.aiFill || 'off';
+    if (mode === 'off' || !to) return;
+    const cap = Math.max(1, Number(s.aiFillMax) || 10);
+    const ops = mode === 'opinions' || mode === 'all' ? opinionQueue(st, fresh, to) : [];
+    const writes = mode === 'all' ? st.ledger.filter(e => e.status === 'approved' && !e.text?.body && !['reader_letters', 'mentions'].includes(e.layer) && (!from || cmp(e.date, from) > 0) && cmp(e.date, to) <= 0) : [];
+    const hasNews = force || (fresh ? fresh.size > 0 : true) || writes.length;
+    const brief = hasNews ? 1 : 0;
+    let budget = cap - brief;
+    const opN = Math.min(ops.length, Math.max(0, budget)); budget -= opN;
+    const wrN = Math.min(writes.length, Math.max(0, budget));
+    const total = brief + opN + wrN;
+    if (!total) { clog('info', `AI 补完：${from || '起点'} → ${to} 没有新的动静，不调用 AI`); return; }
+    const plan = [brief ? '幕后补完 1 次' : '', opN ? `私下看法 ${opN} 次${ops.length > opN ? `（还有 ${ops.length - opN} 人留到下次）` : ''}` : '', wrN ? `写稿 ${wrN} 次${writes.length > wrN ? `（还有 ${writes.length - wrN} 篇）` : ''}` : ''].filter(Boolean).join('、');
+    if (!auto && !confirm(`推演完成。接下来让 AI 补完 ${from || '起点'} → ${to}：\n${plan}\n共调用 AI 约 ${total} 次。继续？\n（取消则只保留推演结果，之后可以在“概览·幕后”里补）`)) { clog('info', `跳过 AI 补完（${plan}）`); return; }
+    taskBegin(`AI 补完 ${from || '起点'} → ${to}（约 ${total} 次）`);
+    let k = 0;
+    try {
+        // 先生成看法：幕后补完要用到
+        for (const r of ops.slice(0, opN)) {
+            taskStep(`私下看法：${byId(st.persons, r.personId)?.name} 读《${byId(st.works, r.workId)?.title}》`, ++k, total);
+            try { await generateOpinion(st, r, getEra(), s); saveState(); } catch (e) { clog('error', `看法生成失败：${e.message}`); }
+        }
+        if (brief) {
+            taskStep('补写幕后：沙龙、编辑部、熟人之间……', ++k, total);
+            const freshIds = fresh && fresh.size ? fresh : null;
+            const dg = await buildOffscreen(st, { from, to, freshRecIds: freshIds, era: getEra(), settings: s, chatTail: chatTail() });
+            if (dg) { storeOffscreen(st, dg); saveState(); } else clog('info', '这段时间推演里没有可写的事');
+        }
+        for (const e of writes.slice(0, wrN)) {
+            taskStep(`写稿：${e.date} ${byId(st.persons, e.personId)?.name || e.personName || ''} ${LAYERS[e.layer]?.label || ''}`, ++k, total);
+            try { await writeEvent(st, e, getEra(), s); saveState(); } catch (err) { clog('error', `写稿失败：${err.message}`); }
+        }
+    } finally { taskEnd(); }
+    commit('AI 补完结束，详情见“概览·幕后”和控制台');
+}
+export { aiFill };
+
+function offscreenBlock(st) {
+    const ds = (st.offscreen || []).slice().sort((a, b) => cmp(b.to, a.to));
+    const KN = { no: '主角不知道', maybe: '主角或许听说', yes: '主角知道' };
+    const dg = (d, open) => `<details class="pe-os" ${open ? 'open' : ''}><summary><b>${h(d.from || '起点')} → ${h(d.to)}</b> <span class="pe-muted">${d.items.length} 条 · ${h(d.summary || '')}</span></summary>
+      ${d.items.slice().sort((a, b) => cmp(a.date, b.date)).map(i => `<div class="pe-os-item pe-os-${i.knows}">
+        <div class="pe-os-top"><span class="pe-card-date">${h(i.date)}</span><span class="pe-chip pe-chip-layer">${h(OFF_KINDS[i.kind] || i.kind)}</span><span class="pe-chip pe-os-k">${KN[i.knows]}</span>${i.work ? ` ${bt(i.work)}` : ''}${i.unknownWho?.length ? ` <span class="pe-chip pe-chip-no" title="不在人物表里">⚠ ${h(i.unknownWho.join('、'))}</span>` : ''}</div>
+        <div>${h(i.text)}</div>
+        ${i.howCouldLearn && i.knows !== 'yes' ? `<div class="pe-muted">主角可能这样得知：${h(i.howCouldLearn)}</div>` : ''}
+        ${i.basis ? `<div class="pe-muted pe-os-basis">依据：${h(i.basis)}</div>` : ''}</div>`).join('')}
+      <div class="pe-actions"><div class="pe-actions-extra"></div><button class="pe-mini" data-act="os-del" data-id="${d.id}">删除这期</button></div></details>`;
+    return `<h4>幕后 <small class="pe-muted">AI 依据推演补写的、聊天里没写到的事</small><span class="pe-spacer"></span>${ds.length ? '<button class="pe-mini" data-act="os-redo" title="重写最近一期">重写最近一期</button>' : ''}</h4>
+      ${ds.length ? ds.slice(0, 2).map((d, i) => dg(d, i === 0)).join('') + (ds.length > 2 ? `<details class="pe-fold"><summary>更早的 ${ds.length - 2} 期</summary>${ds.slice(2).map(d => dg(d, false)).join('')}</details>` : '')
+        : `<div class="pe-empty-sm">还没有。点右上角“一键推演到今天”，推演后会让 AI 补写（可在设置里改成不调用）。</div>`}`;
+}
+
+
+// ———————————— 整理包条目的编辑 ————————————
+const BF_LABEL = { name: '名字', title: '作品名', aliases: '别名', owner: '真实作者', publicIdentityKnown: '身份已公开', knownBy: '知道作者身份的人', originalName: '原文名', periodicity: '出刊周期', weekday: '出刊星期（0=周日）', monthDays: '出刊日', circle: '读者圈子', tier: '影响力 1–5', politics: '倾向', real: '真实存在', note: '备注', roles: '身份', outlets: '供稿刊物', reads: '常读刊物', interests: '关注', likes: '欣赏', dislikes: '反感', closeness: '与主角私交', knowsIdentity: '知道主角是作者', monthlyCapacity: '每月公开文章上限', columnWeekday: '专栏星期（0=周日）', notes: '备注', relations: '熟人关系（JSON）', stances: '思想立场（JSON）', stylePrefs: '文体偏好（JSON）', penname: '署名', form: '形式', outlet: '刊物', pubDate: '发表日期', endDate: '连载结束日', datePrecision: '日期精度', themes: '题材', summary: '概要', versionOf: '另一版本的作品名', shelf: '长期流通（yes/no/空）', shelfUntil: '流通到', claims: '主张（JSON）', date: '日期', layer: '类型', person: '人物', work: '作品', polarity: '褒贬', count: '数量', evidence: '依据', read: '读到什么程度', text: '内容', strength: '热度 0–1' };
+const BF_SKIP = new Set(['rolesGiven']);
+const BF_LONG = new Set(['summary', 'notes', 'note', 'text', 'evidence']);
+const BF_ENUM = {
+    periodicity: () => ({ '': '（未知）', ...PERIODICITY }), circle: () => ({ '': '（未知）', ...CIRCLES }), form: () => ({ '': '（未知）', ...FORMS }),
+    layer: () => Object.fromEntries(Object.entries(LAYERS).map(([k, v]) => [k, v.label])), polarity: () => ({ 1: '肯定', 0: '褒贬参半', '-1': '批评' }),
+    read: () => ({ finished: '读完', skimmed: '读了一部分' }), datePrecision: () => ({ '': '精确到日', xun: '只知道旬', month: '只知道月份', noLaterThan: '不晚于' }),
+    closeness: () => ({ '': '（不改）', 0: '陌生', 1: '认识', 2: '朋友', 3: '至交' }),
+};
+function bitemSpec(k, x) {
+    return Object.entries(x).filter(([f]) => !BF_SKIP.has(f)).map(([f, v]) => {
+        const label = BF_LABEL[f] || f;
+        if (f === 'roles') return { key: f, label, type: 'multi', options: ROLES };
+        if (BF_ENUM[f]) return { key: f, label, type: 'select', options: BF_ENUM[f](), numeric: f === 'polarity' || f === 'closeness' };
+        if (typeof v === 'boolean' || ['publicIdentityKnown', 'real', 'knowsIdentity'].includes(f)) return { key: f, label, type: 'checkbox' };
+        if (Array.isArray(v) && v.some(y => y && typeof y === 'object')) return { key: f, label, type: 'textarea', rows: 4, json: true };
+        if (['relations', 'stances', 'stylePrefs', 'claims'].includes(f)) return { key: f, label, type: 'textarea', rows: 3, json: true };
+        if (Array.isArray(v)) return { key: f, label, type: 'tags', numeric: f === 'monthDays' };
+        if (typeof v === 'number' || ['tier', 'count', 'strength', 'weekday', 'columnWeekday', 'monthlyCapacity'].includes(f)) return { key: f, label, type: 'number', step: f === 'strength' ? 0.05 : 1 };
+        if (BF_LONG.has(f)) return { key: f, label, type: 'textarea', rows: 2 };
+        return { key: f, label };
+    });
+}
+function bitemEditor(k, x) {
+    const spec = bitemSpec(k, x);
+    const val = Object.fromEntries(spec.map(f => [f.key, f.json ? JSON.stringify(x[f.key] || [], null, 1) : x[f.key]]));
+    return `<div class="pe-editor pe-bitem-editor" data-k="${k}">${formHtml(spec, val)}
+      <div class="pe-actions"><div class="pe-actions-extra"></div><button data-act="bitem-cancel">取消</button><button class="pe-primary" data-act="bitem-save">保存这一条</button></div></div>`;
+}
+function bitemHint(k, x) {
+    const bits = k === 'persons' ? [x.closeness != null ? ['陌生', '认识', '朋友', '至交'][x.closeness] : '', (x.outlets || []).join('、')]
+        : k === 'works' ? [x.penname, x.outlet, FORMS[x.form] || ''] : k === 'outlets' ? [PERIODICITY[x.periodicity] || '', CIRCLES[x.circle] || '']
+        : k === 'reactions' ? [x.outlet ? '《' + x.outlet + '》' : '', x.count ? '约 ' + x.count : '', x.summary ? truncate(x.summary, 40) : ''] : [];
+    const t = bits.filter(Boolean).join(' · ');
+    return t ? `<small class="pe-muted">${h(t)}</small>` : '';
+}
+function bundleItemAction(act, st, btn) {
+    const b = st.pendingBundle;
+    if (!b) return;
+    if (act === 'bitem-edit') { bundleEdit = { k: btn.dataset.k, i: +btn.dataset.i }; refresh(); return; }
+    if (act === 'bitem-cancel') { bundleEdit = null; refresh(); return; }
+    if (act === 'bundle-edit-all') { bundleEdit = { all: true }; refresh(); return; }
+    if (act === 'bitem-del') {
+        const k = btn.dataset.k, i = +btn.dataset.i;
+        const x = b[k]?.[i];
+        if (!x) return;
+        b[k].splice(i, 1);
+        bundleEdit = null;
+        commit(`已从整理包删掉：${x.name || x.title || x.text || x.date || ''}`);
+        return;
+    }
+    if (act === 'bitem-save') {
+        const { k, i } = bundleEdit || {};
+        const root = document.querySelector('.pe-bitem-editor');
+        if (!root || !b[k]?.[i]) return;
+        const spec = bitemSpec(k, b[k][i]);
+        const vals = readForm(root, spec);
+        for (const f of spec) if (f.json) {
+            try { vals[f.key] = JSON.parse(vals[f.key] || '[]'); } catch (e) { toast('warning', `“${f.label}”不是合法的 JSON：${e.message}`); return; }
+        }
+        for (const f of spec) if (f.type === 'select' && vals[f.key] === '') vals[f.key] = null;
+        const r = replaceBundleItem(b, k, i, { ...b[k][i], ...vals });
+        st.pendingBundle = r.bundle;
+        bundleEdit = null;
+        commit(`已修改${r.refs ? `，同步改了 ${r.refs} 处引用` : ''}${r.merged ? '，并与同名条目合并' : ''}`);
+        return;
+    }
+    if (act === 'bundle-save-json') {
+        const t = document.getElementById('pe-bundle-json')?.value || '';
+        let obj;
+        try { obj = JSON.parse(t); } catch (e) { toast('warning', 'JSON 有错：' + e.message); return; }
+        st.pendingBundle = normalizeBundle(obj);
+        bundleEdit = null;
+        commit('整理包已更新');
+    }
+}
