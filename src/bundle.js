@@ -7,7 +7,8 @@
 // 整理包里引用别的东西一律用名字，不用 id；名字对不上时会自动新建或给出提示。
 
 import { normalizeISO, cmp } from './date.js';
-import { extractJSON, uid, isStoryMessage } from './util.js';
+import { extractJSON, uid, isStoryMessage, extractSummary } from './util.js';
+import { storyTimeline } from './segments.js';
 import { callLLM } from './llm.js';
 import { clog } from './console.js';
 import { FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, REL_TYPES, REL_FREQ, setStatus, matchSeenFromChat, rerollOutlet, recordManualReading, recomputeReputation, normSide, normStrength } from './engine.js';
@@ -695,12 +696,32 @@ ${known ? `\n已知名字（指同一对象时沿用完全相同的写法）：\
     return bundle || normalizeBundle({});
 }
 
-/** SillyTavern 聊天导出（.jsonl）或当前聊天 → 纯文本 */
-export function chatToText(messages, includeHidden = true) {
-    return (messages || [])
-        .filter(m => isStoryMessage(m, includeHidden))
-        .map(m => `${m.name || (m.is_user ? '用户' : '角色')}：${m.mes}`)
-        .join('\n\n');
+/**
+ * SillyTavern 聊天导出（.jsonl）或当前聊天 → 纯文本。
+ * source='summary'：有摘要块（如 <Narrative_Matrix>）的楼层只取摘要，并在前面标上从正文认出的故事日期；
+ * 没有摘要的楼层（主角的发言、还没用摘要格式的旧楼层）照旧用全文。
+ */
+export function chatToText(messages, includeHidden = true, { source = 'full', tags = 'Narrative_Matrix', headChars = 160, maxUser = 2000 } = {}) {
+    const story = (messages || []).filter(m => isStoryMessage(m, includeHidden));
+    const who = m => m.name || (m.is_user ? '用户' : '角色');
+    if (source !== 'summary') return story.map(m => `${who(m)}：${m.mes}`).join('\n\n');
+    const tl = storyTimeline(story, { headChars, includeHidden });
+    let lastDate = null;
+    return story.map((m, i) => {
+        const sum = extractSummary(m.mes, tags);
+        const d = tl[i]?.iso;
+        const tag = d && d !== lastDate ? `【故事日期 ${d}】\n` : '';
+        if (d) lastDate = d;
+        if (sum) return `${tag}${who(m)}（本楼摘要）：${sum}`;
+        const body = m.is_user && m.mes.length > maxUser ? m.mes.slice(0, maxUser) + '……' : m.mes;
+        return `${tag}${who(m)}：${body}`;
+    }).join('\n\n');
+}
+/** 估算：有多少楼带摘要块 */
+export function summaryCoverage(messages, includeHidden = true, tags = 'Narrative_Matrix') {
+    const story = (messages || []).filter(m => isStoryMessage(m, includeHidden));
+    const n = story.filter(m => extractSummary(m.mes, tags)).length;
+    return { total: story.length, withSummary: n, fullChars: story.reduce((a, m) => a + m.mes.length, 0) };
 }
 export function parseJsonl(text) {
     const out = [];

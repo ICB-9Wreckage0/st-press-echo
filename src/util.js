@@ -96,3 +96,18 @@ export function isStoryMessage(m, includeHidden = true) {
     if (/^SillyTavern System$/i.test(m.name || '')) return false;
     return true;
 }
+
+/**
+ * 从一楼正文里取出摘要块（如 <Narrative_Matrix>…</Narrative_Matrix>）。tags 为标签名，逗号分隔。
+ * 没有就返回空串。外面包的 <details><summary> 不要。
+ */
+export function extractSummary(text, tags = 'Narrative_Matrix') {
+    const t = String(text || '');
+    const out = [];
+    for (const tag of String(tags || '').split(/[,，\s]+/).map(x => x.trim()).filter(Boolean)) {
+        const esc = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`<${esc}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${esc}>`, 'gi');
+        for (const m of t.matchAll(re)) if (m[1].trim()) out.push(m[1].trim());
+    }
+    return out.join('\n');
+}

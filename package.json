@@ -1,6 +1,6 @@
 {
     "name": "st-press-echo",
-    "version": "0.22.1",
+    "version": "0.22.3",
     "private": true,
     "type": "module",
     "description": "SillyTavern 扩展：文学/报刊特化的世界推演",

@@ -1,7 +1,8 @@
 // ui.js — 面板界面（纯 DOM，不依赖框架）
 
 import { escapeHtml as h, parseTags, tagsToText, truncate, uid, extractJSON, isStoryMessage } from './util.js';
-import { weekdayZh, normalizeISO, yearOf, cmp, addDays, diffDays, pickStoryDate } from './date.js';
+import { weekdayZh, normalizeISO, yearOf, cmp, addDays, diffDays } from './date.js';
+import { planFloorSegments } from './segments.js';
 import {
     FORMS, PERIODICITY, CIRCLES, LAYERS, ROLES, knownToUser, knownSince, repLabel, fameLabel, esteemLabel, FAME_LEVELS, recomputeReputation, repBreakdown, repOrphans, fixRepOrphans, setStatus, rerollWork, advanceTo, byId, columnSlots,
     rerollPerson, rerollOutlet, approxIssue, READ_STATES, STRENGTH, EXPRESSION, CHANNELS, OPINION_STATUS, REL_TYPES, REL_FREQ, REL_BASIS, isMutual, relationsBetween, edgeFlows, findPaths, relationsOf, opinionStatus, isMajor, recordManualReading, backfill, backfillBegin, backfillStep, backfillEnd, simulate, impressionAt, IMPRESSION_LABEL, seriesKey, READ_DONE } from './engine.js';
@@ -34,7 +35,7 @@ import { buildConcepts, unclassified, allTags, conceptGroups } from './concepts.
 import { planImport, readTextFile, parseFileName } from './txtimport.js';
 import {
     FORMAT_SPEC, FORMAT_RULES, buildExternalPrompt, normalizeBundle, mergeBundles, previewBundle, applyBundle, organize,
-    chatToText, parseJsonl, looksLikeBundle, chunk as chunkMaterial, replaceBundleItem,
+    chatToText, summaryCoverage, parseJsonl, looksLikeBundle, chunk as chunkMaterial, replaceBundleItem,
 } from './bundle.js';
 
 let app = null; // { refreshInjection, detectFromChat }
@@ -728,32 +729,13 @@ let bfForm = { mode: 'hidden', by: 'floors', size: 100 };
 function planSegments(st, by, size) {
     const target = st.backfillRun?.target || st.currentDate;
     const first = st.works.map(w => w.pubDate).filter(Boolean).sort()[0];
-    const segs = [];
+    let out = [];
+    planSegments.info = null;
     if (by !== 'days') {
         const chat = globalThis.SillyTavern?.getContext?.()?.chat || [];
-        let running = null, cur = null;
-        const hc = getSettings().headChars;
-        chat.forEach((m, i) => {
-            if (!isStoryMessage(m, getSettings().includeHidden !== false)) return;
-            const pick = pickStoryDate(m.mes, running, { maxJumpDays: 400, headChars: hc });
-            if (pick) running = pick.iso;
-            if (!cur) cur = { fromMes: i, toMes: i, chars: 0, floors: 0, endDate: null };
-            cur.toMes = i; cur.chars += m.mes.length; cur.floors++;
-            if (running) cur.endDate = running;
-            if ((by === 'floors' && cur.floors >= size) || (by === 'chars' && cur.chars >= size)) { segs.push(cur); cur = null; }
-        });
-        if (cur) segs.push(cur);
-    }
-    // 只留日期在作品发表之后、并且逐段往后推的；不满足的并进前一段
-    let last = first ? addDays(first, -1) : null;
-    let out = [];
-    const mergePrev = g => { const p = out[out.length - 1]; if (p) { p.toMes = g.toMes; p.chars += g.chars; } };
-    for (const g of segs) {
-        if (!g.endDate || !first || cmp(g.endDate, first) < 0) { mergePrev(g); continue; }
-        const end = cmp(g.endDate, target) > 0 ? target : g.endDate;
-        if (last && cmp(end, last) <= 0) { mergePrev(g); continue; }
-        out.push({ ...g, endDate: end });
-        last = end;
+        const r = planFloorSegments(chat, { by, size, first, target, headChars: getSettings().headChars, includeHidden: getSettings().includeHidden !== false });
+        out = r.segs;
+        planSegments.info = { merged: r.merged, rejected: r.rejected };
     }
     if (by === 'days' || !out.length) {
         out = [];
@@ -1396,7 +1378,11 @@ function chatMaterial(from, to, label) {
     const inc = getSettings().includeHidden !== false;
     const msgs = chat.slice(from, to + 1);
     const hid = msgs.filter(m => m?.is_system && isStoryMessage(m, true)).length;
-    return { id: uid(), label: `${label}（#${from}–#${to}，${msgs.length} 楼${hid ? (inc ? `，含隐藏 ${hid} 楼` : `，不含隐藏的 ${hid} 楼`) : ''}）`, kind: '聊天记录', text: chatToText(msgs, inc), range: { from, to } };
+    const o = chatOpts();
+    const cov = o.source === 'summary' ? summaryCoverage(msgs, inc, o.tags) : null;
+    const text = chatToText(msgs, inc, o);
+    const sumNote = cov ? (cov.withSummary ? `，${cov.withSummary}/${cov.total} 楼只读摘要，原文 ${(cov.fullChars / 10000).toFixed(1)} 万字 → ${(text.length / 10000).toFixed(1)} 万字` : '，没找到摘要块，读全文') : '';
+    return { id: uid(), label: `${label}（#${from}–#${to}，${msgs.length} 楼${hid ? (inc ? `，含隐藏 ${hid} 楼` : `，不含隐藏的 ${hid} 楼`) : ''}${sumNote}）`, kind: '聊天记录', text, range: { from, to } };
 }
 function pointerBlock(st) {
     const chat = chatNow();
@@ -1493,7 +1479,7 @@ async function addOrgFiles(files) {
             const text = await readTextFile(f);
             if (/\.jsonl$/i.test(f.name)) {
                 const rows = parseJsonl(text);
-                materials.push({ id: uid(), label: f.name, kind: '聊天记录', text: chatToText(rows, getSettings().includeHidden !== false) });
+                materials.push({ id: uid(), label: f.name, kind: '聊天记录', text: chatToText(rows, getSettings().includeHidden !== false, chatOpts()) });
                 continue;
             }
             if (/\.json$/i.test(f.name)) {
@@ -1624,6 +1610,8 @@ const SETTINGS_SPEC = [
     { key: 'knowPublic', label: '公开见报的文章，主角怎么知道', type: 'select', options: { reads: '常读的当天，其余靠剪报', all: '见报当天就知道（旧）', marked: '只算我标了读到的' }, hint: '见报不等于主角读到。“常读”在刊物资料里勾；不看报的主角选“只算我标了读到的”。剧情里录入的、转到主角手上的读者来信不受影响；整理材料时聊天里提到了推演里的某篇文章，会自动标为读到；也可以在账本里点“主角已读到”' },
     { key: 'clipDays', label: '剪报几天后送到', type: 'number', hint: '0 = 没有剪报服务：不常读的报刊上的文章（包括各报转载汇总），主角要等聊天里提到或你标记才知道' },
     { key: 'panelOpacity', label: '面板不透明度', type: 'range', min: 0, max: 100, step: 5, unit: '%', hint: '拖动时立刻生效。100% 完全挡住后面的聊天文字；0% 完全跟随酒馆主题（主题半透明时会透出后面的字）' },
+    { key: 'chatSource', label: '整理聊天时读什么', type: 'select', options: { summary: '有摘要块的楼只读摘要（省 token）', full: '读全文' }, hint: '一键整理、AI 补完参考最近剧情时用。摘要模式下，每楼开头认出的故事日期会标在摘要前面；没有摘要块的楼（主角的发言、旧楼层）照旧读全文。回溯分段认日期始终读全文' },
+    { key: 'summaryTags', label: '摘要块的标签名', hint: '如 Narrative_Matrix，就读 <Narrative_Matrix>…</Narrative_Matrix> 里的内容。多个用逗号分隔' },
     { key: 'includeHidden', label: '读取隐藏的楼层', type: 'checkbox', hint: '用“隐藏楼层”省 token 时，被隐藏的楼层仍然是剧情：回溯推演分段、一键整理当前聊天、AI 补完参考的最近剧情都会读它们。关掉就只读没隐藏的' },
     { key: 'injectEnabled', label: '向主对话注入报刊现状', type: 'checkbox' },
     { key: 'injectPosition', label: '注入位置', type: 'select', options: { 0: '系统提示词内', 1: '聊天内（按深度）', 2: '最前面' }, numeric: true },
@@ -1656,7 +1644,7 @@ const SETTINGS_SPEC = [
 
 const SET_GROUPS = [
     { title: '基本', desc: '插件开关、审核方式与面板外观', keys: ['enabled', 'autoApprove', 'panelOpacity'] },
-    { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvanceMode', 'autoAdvanceDays', 'maxJumpDays', 'headChars', 'includeHidden'] },
+    { title: '故事日期', desc: '怎样从聊天里认出故事进行到了哪一天', keys: ['autoDetectDate', 'autoAdvanceMode', 'autoAdvanceDays', 'maxJumpDays', 'headChars', 'includeHidden', 'chatSource', 'summaryTags'] },
     { title: '世界书', desc: '让主对话里的 NPC 知道自己读过什么、怎么看', keys: ['loreEnabled', 'loreAuto', 'loreBook', 'loreScope', 'loreWorks', 'loreMaxChars', 'loreBindChat'] },
     { title: '书信簿联动', desc: '与 st-epistolary 书信簿插件配合', keys: ['epiEnabled', 'epiSyncDate', 'epiSendAuto'] },
     { title: '推演', desc: '只影响概率，不调用模型', keys: ['intensity', 'rumorHalfLife'], extra: 'layerMult' },
@@ -2097,7 +2085,10 @@ async function onClick(e) {
             bfForm = { mode: $('#pe-bf-mode').value, by: $('#pe-bf-by').value, size: Math.max(1, +$('#pe-bf-size').value || 100) };
             const segs = planSegments(st, bfForm.by, bfForm.size);
             if (!segs.length) return toast('warning', '没有可以推演的时间段');
-            if (!confirm(`将分 ${segs.length} 段，从 ${st.works.map(w => w.pubDate).filter(Boolean).sort()[0]} 推到 ${st.currentDate}。之前推演出但未入账的内容会清掉重来。开始？`)) break;
+            const inf = planSegments.info;
+            const WHY = { 'after-target': '晚于当前日期', backward: '比前面的日期早', 'too-far': '一下跳得太远', unconfirmed: '后面几楼没跟上' };
+            const note = inf ? [inf.merged ? `有 ${inf.merged} 段楼层里日期没往前走（同一天的戏），并进了前一段` : '', inf.rejected.length ? `忽略了 ${inf.rejected.length} 处顺口提到的日期，例如：${inf.rejected.slice(0, 4).map(x => `第 ${x.i + 1} 楼 ${x.raw}（${WHY[x.why] || x.why}）`).join('；')}` : ''].filter(Boolean).join('\n') : '';
+            if (!confirm(`将分 ${segs.length} 段，从 ${st.works.map(w => w.pubDate).filter(Boolean).sort()[0]} 推到 ${st.currentDate}。${note ? '\n' + note + '\n' : ''}之前推演出但未入账的内容会清掉重来。开始？`)) break;
             const b = backfillBegin(st, s, getEra(), { mode: bfForm.mode });
             st.backfillRun.segments = segs;
             logLine(st, `开始分段回溯（${bfForm.mode === 'hidden' ? '只补看不见的部分' : '全部'}，${segs.length} 段）：人物 ${b.persons} 位、作品 ${b.works} 部`);
@@ -2894,11 +2885,12 @@ function lastFillTo(st, prev = false) {
     if (prev) return ds.length >= 2 ? ds[ds.length - 2].to : ds[0]?.from || null;
     return ds.length ? ds[ds.length - 1].to : null;
 }
+const chatOpts = () => { const g = getSettings(); return { source: g.chatSource || 'summary', tags: g.summaryTags || 'Narrative_Matrix', headChars: g.headChars }; };
 function chatTail(n = 8, max = 5000, skip = 0) {
     const c = globalThis.SillyTavern?.getContext?.();
     const all = c?.chat || [];
     const msgs = all.slice(0, Math.max(0, all.length - skip)).filter(m => isStoryMessage(m, getSettings().includeHidden !== false)).slice(-n);
-    let t = msgs.map(m => `${m.name || ''}：${m.mes}`).join('\n\n');
+    let t = chatOpts().source === 'summary' ? chatToText(msgs, true, chatOpts()) : msgs.map(m => `${m.name || ''}：${m.mes}`).join('\n\n');
     if (t.length > max) t = '……' + t.slice(-max);
     return t;
 }

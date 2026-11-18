@@ -639,4 +639,43 @@ function base(seed = 'reg') {
     assert(I.ideasKnownBy(t, 'mir', '1890-05-25').find(k => k.project.title === '性别小说').talks.length === 1, '米尔博在场过，不降成只听说');
     ok('顺带提起的构想：在场者只知道有这么回事；答应帮忙与兑现可以记');
 }
+// 31. 回溯分段：按 100 楼一段要真的分出很多段；顺口提到的未来日期（交稿期、作品名里的年份）不能把后面全吞掉
+{
+    const { planFloorSegments } = await import('../src/segments.js');
+    const chat = [];
+    let d = '1890-04-01';
+    for (let i = 0; i < 4551; i++) {
+        if (i % 30 === 0 && i) d = addDays(d, 1);
+        const [y, m, dd] = d.split('-').map(Number);
+        let mes = `${y}年${m}月${dd}日，巴黎。` + '正文'.repeat(50);
+        if (i === 950) mes = `${y}年${m}月${dd}日。门德斯说：1890年9月4日之前务必交稿。`; // 顺口一提的未来日期
+        if (i === 1200) mes = '他翻开《1999年12月31日》的手稿。' + mes; // 作品名里的年份
+        if (i % 7 === 3) mes = '（没有日期的一楼）';
+        chat.push({ name: i % 2 ? 'x' : '勒鲁', is_user: !(i % 2), mes, extra: {} });
+    }
+    const target = d;
+    const r = planFloorSegments(chat, { by: 'floors', size: 100, first: '1890-04-11', target, headChars: 160 });
+    assert(r.segs.length > 30, `应该分成很多段，实际 ${r.segs.length}`);
+    assert(r.rejected.some(x => x.i === 950), '交稿日期被当成顺口一提');
+    for (let k = 1; k < r.segs.length; k++) assert(cmp(r.segs[k].endDate, r.segs[k - 1].endDate) > 0);
+    assert(r.segs.every(g => g.floors <= 200), '没有哪一段吞掉一大片楼层');
+    ok(`回溯按 100 楼分段：${r.segs.length} 段；顺口提到的未来日期不会把后面全吞掉`);
+}
+// 32. 只读摘要：有 <Narrative_Matrix> 的楼只取摘要，并标上从正文认出的故事日期；没有摘要的楼读全文
+{
+    const { extractSummary } = await import('../src/util.js');
+    const mx = '<details><summary>✧ 🧬 叙事矩阵 🧬 ✧</summary>\n<Narrative_Matrix>\n[Sequence ID]: #26\n[Coordinates]: Day 231 (傍晚 18:05)\n[Synopsis]: 瓦尼耶书店学徒送来急条。\n</Narrative_Matrix>\n</details>';
+    assert(extractSummary(mx).includes('瓦尼耶') && !extractSummary(mx).includes('details'));
+    assert.equal(extractSummary('没有摘要'), '');
+    const msgs = [
+        { name: '勒鲁', is_user: true, mes: '我拆开便条。', extra: {} },
+        { name: 'GM', mes: '1890年8月30日（星期六）傍晚，马索大街。' + '长长的正文'.repeat(400) + mx, extra: {} },
+    ];
+    const t = B.chatToText(msgs, true, { source: 'summary' });
+    assert(t.includes('【故事日期 1890-08-30】') && t.includes('本楼摘要') && t.includes('我拆开便条') && !t.includes('长长的正文'));
+    assert(t.length < B.chatToText(msgs).length / 3);
+    const cov = B.summaryCoverage(msgs);
+    assert.equal(cov.withSummary, 1); assert.equal(cov.total, 2);
+    ok('只读摘要：取 <Narrative_Matrix> 里的内容，标上故事日期；主角发言照旧读全文');
+}
 console.log('回归测试全部通过');

@@ -36,6 +36,8 @@ export const DEFAULT_SETTINGS = {
     injectMaxRumors: 5,
     panelOpacity: 90,
     includeHidden: true,
+    chatSource: 'summary', // 读聊天：summary=有摘要块的楼只读摘要；full=读全文
+    summaryTags: 'Narrative_Matrix',
     knowPublic: 'reads',
     clipDays: 3,
     loreMaxChars: 1500,
