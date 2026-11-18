@@ -1,11 +1,5 @@
 {
-    "name": "st-press-echo",
-    "version": "0.23.1",
-    "private": true,
-    "type": "module",
-    "description": "SillyTavern 扩展：文学/报刊特化的世界推演",
-    "scripts": {
-        "test": "node test/run.js && node test/regress.js"
-    },
-    "license": "MIT"
+  "type": "module",
+  "name": "st-epistolary",
+  "license": "MIT"
 }

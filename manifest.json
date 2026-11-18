@@ -1,11 +1,13 @@
 {
-    "display_name": "📰 报刊回声 Press Echo",
+    "display_name": "书信簿 Epistolary",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "Claude（为用户定制）",
-    "version": "0.23.1",
-    "homePage": ""
+    "author": "ICB-9Wreckage0",
+    "version": "0.57.3",
+    "homePage": "https://github.com/ICB-9Wreckage0/st-epistolary",
+    "auto_update": false,
+    "generate_interceptor": "epistolaryInterceptor"
 }

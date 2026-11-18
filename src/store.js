@@ -1,194 +1,232 @@
-// store.js — 存档。故事数据跟着聊天存（chat metadata），设置和年代档案缓存跟着扩展设置存。
-import { stripSources } from './sources.js';
+// 书信簿 · 存储
+// 档案存成酒馆服务器上的一个独立 JSON 文件（data/<用户>/user/files/epistolary_archive.json），
+// 不放进 settings.json，也不放在浏览器本地数据库里 —— 换浏览器、清缓存都不会丢。
+// 本次会话第一次保存前，会先把读到的旧档案另存一份备份。
 
-import { DEFAULT_ENGINE_SETTINGS } from './engine.js';
+import { createArchive, migrateArchive } from './model.js';
 
-export const MODULE = 'press_echo';
-const STATE_VERSION = 2;
-
-export const DEFAULT_SETTINGS = {
-    enabled: true,
-    fabPos: null, // 悬浮按钮位置 { right, bottom }
-    winRect: null, // 面板位置和大小 { left, top, width, height }
-    // 推演
-    ...DEFAULT_ENGINE_SETTINGS,
-    autoDetectDate: true,
-    // 世界书
-    loreEnabled: false,
-    loreAuto: true,
-    loreBook: '报刊回声',
-    loreScope: 'involved', // involved 读过作品/登记了立场/与主角相识的人 · all 全部人物
-    loreWorks: true,
-    loreBindChat: true,
-    epiEnabled: true, // 书信簿（st-epistolary）联动总开关
-    epiSyncDate: true,
-    epiSendAuto: true, // 入账并写好正文的私信，自动寄进书信簿（寄给主角） // 书信簿（st-epistolary）推算出更晚的剧情日期时，一并采用
-    autoAdvance: true, // 旧版开关，保留兼容
-    autoAdvanceMode: 'interval', // interval 故事时间每过 N 天推演一次 / every 每次识别到新日期 / off 只手动
-    autoAdvanceDays: 14,
-    maxJumpDays: 120,
-    headChars: 160,
-    // 注入
-    injectEnabled: true,
-    injectPosition: 1, // 0 = 系统提示词内，1 = 聊天内（按深度），2 = 最前
-    injectDepth: 4,
-    injectMaxItems: 12,
-    injectMaxRumors: 5,
-    panelOpacity: 90,
-    includeHidden: true,
-    chatSource: 'summary', // 读聊天：summary=有摘要块的楼只读摘要；full=读全文
-    readUser: false, // 整理时读主角（用户）的发言
-    summaryTags: 'Narrative_Matrix',
-    summaryFallback: 'full', // 没有摘要块的楼：full 读全文 / skip 跳过（主角发言仍读）
-    knowPublic: 'reads',
-    clipDays: 3,
-    loreMaxChars: 1500,
-    injectEraNotes: true,
-    injectOffscreen: 'known', // 幕后内容注入：off 不注入 / known 只注入主角能知道的 / all 全部（标明主角不知道）
-    // 一键推演时让 AI 补完
-    aiFill: 'opinions', // off / brief 幕后补完 / opinions 再给新读者生成看法 / all 再给新入账反响写稿
-    aiFillMax: 10,
-    aiFillOnAuto: false,
-    autoFloorEvery: 0,
-    autoFloorDelay: 5, // 只按 N 楼之前的内容推演，最新几楼重roll、改写不会牵连 // 每聊满 N 楼自动跑一次“一键推演到今天”（0 = 不按楼数）
-    aiSuggestPersons: true, // AI 补完时推荐可能读到作品的新人物（进待确认）
-    consoleAuto: true,
-    // 写稿
-    apiMode: 'st', // 'st' 用酒馆当前连接；'custom' 用独立 OpenAI 兼容接口
-    apiUrl: '',
-    apiKey: '',
-    apiModel: '',
-    temperature: 0.7,
-    maxTokens: 1800,
-    realPersonPolicy: 'stance', // 'stance' 真实人物只写立场摘要；'full' 允许拟写全文（会标注虚构）
-    outputLanguage: '中文',
-    // 年代检索
-    eraRefresh: 'quarter', // 年代档案按季度 / 按月刷新（off 不刷新）
-    eraRefreshMode: 'auto', // auto 到期自动刷新（调用 1 次 AI）/ remind 只提醒
-    wikiEnabled: true,
-    wikiLangs: 'fr,en,zh',
-    eraCache: {},
-};
-
-export function defaultState() {
-    return {
-        version: STATE_VERSION,
-        seed: Math.random().toString(36).slice(2, 10),
-        currentDate: null,
-        weekdayWarning: null,
-        era: { year: null, place: '', country: '', lang: '', key: null },
-        eraNotes: [],
-        pennames: [],
-        works: [],
-        persons: [],
-        outlets: [],
-        ledger: [],
-        receptions: [],
-        snapshots: [],
-        decisionMemo: {},
-        pendingBundle: null,
-        followers: {},
-        impressions: {},
-        recommends: {},
-        identityLeaks: [],
-        epiHints: [],
-        rolls: {},
-        rumors: [],
-        offscreen: [],
-        privateFacts: [], // 主角的私人信息与知情者
-        perceptions: [], // 每个人对作者的认知
-        factLeaks: [], // 私人信息可能外传的候选
-        outletChecks: [], // AI 核对刊物资料，待确认
-        relSuggestions: [], // AI 查到、待确认的人物关系
-        selfImage: [], // 主角怎么看自己（self）、对外怎么说（claim）
-        assumed: [], // 主角以为某人 / 某圈子怎么看他
-        publicImages: [], // 各读者圈子的公众形象（AI 依据公开材料整理）
-        percReviews: [], // 认知对照分析（AI）
-        projects: [], // 创作构想（不是作品，不进阅读/名声）
-        ideaTalks: [], // 灵感讨论：谁在场、谁提了什么、采纳没有
-        reputation: {},
-        pendingMerge: [],
-        log: [],
-    };
-}
+export const FILE_NAME = 'epistolary_archive.json';
+export const BACKUP_NAME = 'epistolary_archive.backup.json';
+export const BACKUP_INDEX = 'epistolary_backups.json';   // 自动备份的清单
+const BACKUP_PREFIX = 'epistolary_backup_';
+const FALLBACK_KEY = 'epistolary_fallback_archive';
 
 function ctx() {
-    return globalThis.SillyTavern?.getContext?.();
+    return SillyTavern.getContext();
 }
 
-export function getSettings() {
-    const c = ctx();
-    if (!c) return { ...DEFAULT_SETTINGS };
-    const all = c.extensionSettings;
-    const saved = all[MODULE];
-    // 旧版只有“识别到新日期后自动推演”开关：关着的迁移成“不自动”，开着的迁移成“按间隔”
-    if (saved && saved.autoAdvanceMode === undefined) saved.autoAdvanceMode = saved.autoAdvance === false ? 'off' : 'interval';
-    all[MODULE] = Object.assign({}, DEFAULT_SETTINGS, saved || {});
-    all[MODULE].layerMult = Object.assign({}, DEFAULT_SETTINGS.layerMult, all[MODULE].layerMult || {});
-    return all[MODULE];
+function toBase64(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
 }
 
-export function saveSettings() {
-    ctx()?.saveSettingsDebounced?.();
+async function uploadFile(name, text) {
+    const res = await fetch('/api/files/upload', {
+        method: 'POST',
+        headers: ctx().getRequestHeaders(),
+        body: JSON.stringify({ name, data: toBase64(text) }),
+    });
+    if (!res.ok) throw new Error(`上传失败：HTTP ${res.status}`);
+    return res.json().catch(() => ({}));
 }
 
-export function getState() {
-    const c = ctx();
-    if (!c || !c.chatMetadata) return null;
-    const meta = c.chatMetadata;
-    if (!meta[MODULE] || typeof meta[MODULE] !== 'object') meta[MODULE] = defaultState();
-    const st = meta[MODULE];
-    // 补齐旧存档缺的字段
-    const def = defaultState();
-    for (const k of Object.keys(def)) if (st[k] === undefined) st[k] = def[k];
-    return st;
-}
+export class Store {
+    constructor() {
+        this.archive = createArchive();
+        this.mode = 'unloaded';   // 'file' | 'fallback' | 'unloaded'
+        this.rawLoaded = null;    // 读到的原始文本，用于第一次保存前的备份
+        this.backedUp = false;
+        this.saveTimer = null;
+        this.lastError = '';
+        this.listeners = new Set();
+        this.backups = [];
+    }
 
-let saveTimer = null;
-export function saveState() {
-    try { const st = ctx()?.chatMetadata?.[MODULE]; if (st) stripSources(st, () => saveState()); } catch (e) { console.warn('[报刊回声]', e); }
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-        const c = ctx();
-        if (!c) return;
-        if (typeof c.saveMetadata === 'function') c.saveMetadata();
-        else if (typeof c.saveChat === 'function') c.saveChat();
-    }, 400);
-}
+    onChange(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
+    emit() { this.listeners.forEach(fn => { try { fn(); } catch (e) { console.error(e); } }); }
 
-export function resetState() {
-    const c = ctx();
-    if (!c?.chatMetadata) return null;
-    c.chatMetadata[MODULE] = defaultState();
-    saveState();
-    return c.chatMetadata[MODULE];
-}
+    async load() {
+        try {
+            const res = await fetch(`/user/files/${FILE_NAME}?t=${Date.now()}`, { cache: 'no-store' });
+            if (res.ok) {
+                const text = await res.text();
+                this.rawLoaded = text;
+                this.archive = migrateArchive(JSON.parse(text));
+                this.mode = 'file';
+            } else if (res.status === 404) {
+                this.archive = this.loadFallback() || createArchive();
+                this.mode = 'file';
+            } else {
+                throw new Error(`HTTP ${res.status}`);
+            }
+        } catch (e) {
+            console.warn('[书信簿] 读取档案文件失败，改用备用存储', e);
+            this.lastError = String(e.message || e);
+            this.archive = this.loadFallback() || createArchive();
+            this.mode = 'fallback';
+        }
+        this.emit();
+        return this.archive;
+    }
 
-/** 这份数据像不像“整理包”（而不是插件自己导出的存档） */
-export function looksLikeBundleData(obj) {
-    if (!obj || typeof obj !== 'object') return false;
-    if (obj.format === 'press-echo-import') return true;
-    const noId = list => Array.isArray(list) && list.length && list.some(x => x && typeof x === 'object' && !x.id);
-    return noId(obj.persons) || noId(obj.works) || noId(obj.pennames) || noId(obj.outlets);
-}
+    loadFallback() {
+        const s = ctx().extensionSettings?.[FALLBACK_KEY];
+        return s ? migrateArchive(s) : null;
+    }
 
-export function replaceState(obj) {
-    const c = ctx();
-    if (!c?.chatMetadata) return null;
-    if (looksLikeBundleData(obj)) throw new Error('这是“整理包”，不是插件导出的存档。请到“导入与整理”页读取整理包（会先给出预览，再按名字合并）。');
-    c.chatMetadata[MODULE] = Object.assign(defaultState(), obj || {});
-    saveState();
-    return c.chatMetadata[MODULE];
-}
+    // 防抖保存：连续改动只写一次
+    save() {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = setTimeout(() => this.saveNow(), 600);
+        this.emit();
+    }
 
-export function logLine(state, text) {
-    state.log = state.log || [];
-    state.log.unshift({ at: new Date().toISOString(), date: state.currentDate, text });
-    if (state.log.length > 200) state.log.length = 200;
-}
+    async saveNow() {
+        clearTimeout(this.saveTimer);
+        const text = JSON.stringify(this.archive, null, 2);
+        try {
+            if (!this.backedUp && this.rawLoaded) {
+                await uploadFile(BACKUP_NAME, this.rawLoaded);
+            }
+            this.backedUp = true;
+            await uploadFile(FILE_NAME, text);
+            if (this.mode === 'fallback') {
+                // 文件存储恢复了，清掉备用存储里的旧副本
+                delete ctx().extensionSettings[FALLBACK_KEY];
+                ctx().saveSettingsDebounced();
+            }
+            this.mode = 'file';
+            this.lastError = '';
+        } catch (e) {
+            console.error('[书信簿] 保存到文件失败，暂存到扩展设置里', e);
+            this.lastError = String(e.message || e);
+            this.mode = 'fallback';
+            ctx().extensionSettings[FALLBACK_KEY] = this.archive;
+            ctx().saveSettingsDebounced();
+            toastr?.warning('书信簿：保存到文件失败，已暂存到酒馆设置里。建议尽快导出备份。');
+        }
+        this.emit();
+    }
 
-/** 自动推演方式（兼容旧版的开关） */
-export function advanceMode(s) {
-    if (s.autoAdvanceMode) return s.autoAdvanceMode;
-    return s.autoAdvance === false ? 'off' : 'interval';
+    // ---------- 自动备份 ----------
+    // 每天第一次打开酒馆时，把读到的档案另存一份 epistolary_backup_日期.json，只留最近 keep 份。
+    // 手动备份（“立即备份”）另外存，不会被自动清掉。
+
+    async loadBackupIndex() {
+        try {
+            const res = await fetch(`/user/files/${BACKUP_INDEX}?t=${Date.now()}`, { cache: 'no-store' });
+            const list = res.ok ? JSON.parse(await res.text()) : [];
+            this.backups = Array.isArray(list) ? list.filter(b => b && b.name) : [];
+        } catch {
+            this.backups = [];
+        }
+        this.backups.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+        return this.backups;
+    }
+
+    async saveBackupIndex() {
+        await uploadFile(BACKUP_INDEX, JSON.stringify(this.backups, null, 2));
+    }
+
+    static today() {
+        const d = new Date();
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+
+    static countLetters(text) {
+        try { return Object.keys(JSON.parse(text).letters || {}).length; } catch { return 0; }
+    }
+
+    async writeBackup(text, { manual = false, note = '' } = {}) {
+        const now = new Date();
+        const p = n => String(n).padStart(2, '0');
+        const date = Store.today();
+        const name = manual || note
+            ? `${BACKUP_PREFIX}${date}_${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}.json`
+            : `${BACKUP_PREFIX}${date}.json`;
+        await uploadFile(name, text);
+        this.backups = (this.backups || []).filter(b => b.name !== name);
+        this.backups.unshift({ name, date, at: now.toISOString(), letters: Store.countLetters(text), size: text.length, manual: !!manual, note });
+        return name;
+    }
+
+    async deleteBackupFile(name) {
+        try {
+            await fetch('/api/files/delete', { method: 'POST', headers: ctx().getRequestHeaders(), body: JSON.stringify({ path: `user/files/${name}` }) });
+        } catch { /* 文件已经不在了 */ }
+    }
+
+    // 打开酒馆时调用：今天还没备份过就备份一份，再删掉多出来的旧的自动备份
+    async autoBackup(keep = 7) {
+        if (this.mode !== 'file' || !this.rawLoaded || !(keep > 0)) return null;
+        await this.loadBackupIndex();
+        const today = Store.today();
+        let made = null;
+        if (!this.backups.some(b => !b.manual && !b.note && b.date === today)) made = await this.writeBackup(this.rawLoaded);
+        const autos = this.backups.filter(b => !b.manual && !b.note).sort((a, b) => String(b.at).localeCompare(String(a.at)));
+        const extra = autos.slice(keep);
+        for (const b of extra) await this.deleteBackupFile(b.name);
+        // “恢复前”的自动快照最多留 5 份
+        const pre = this.backups.filter(b => b.note).slice(5);
+        for (const b of pre) await this.deleteBackupFile(b.name);
+        if (made || extra.length || pre.length) {
+            const drop = new Set([...extra, ...pre].map(b => b.name));
+            this.backups = this.backups.filter(b => !drop.has(b.name));
+            await this.saveBackupIndex();
+        }
+        return made;
+    }
+
+    async backupNow({ note = '' } = {}) {
+        await this.loadBackupIndex();
+        const name = await this.writeBackup(this.exportJson(), { manual: !note, note });
+        await this.saveBackupIndex();
+        return name;
+    }
+
+    async readBackup(name) {
+        const res = await fetch(`/user/files/${encodeURIComponent(name)}?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`读不到备份文件（HTTP ${res.status}）`);
+        return res.text();
+    }
+
+    // 恢复：先把现在的档案存一份“恢复前”的快照，再换成备份里的
+    async restoreBackup(name) {
+        const text = await this.readBackup(name);
+        migrateArchive(JSON.parse(text)); // 先确认能读
+        await this.backupNow({ note: `恢复前的快照` });
+        this.importJson(text);
+        await this.saveNow();
+        return this.archive;
+    }
+
+    async removeBackup(name) {
+        await this.loadBackupIndex();
+        await this.deleteBackupFile(name);
+        this.backups = this.backups.filter(b => b.name !== name);
+        await this.saveBackupIndex();
+    }
+
+    statusText() {
+        if (this.mode === 'file') return `档案文件：user/files/${FILE_NAME}`;
+        if (this.mode === 'fallback') return `⚠ 文件存储不可用，暂存在酒馆设置里（${this.lastError}）。请导出备份。`;
+        return '尚未读取';
+    }
+
+    exportJson() {
+        return JSON.stringify(this.archive, null, 2);
+    }
+
+    importJson(text) {
+        const parsed = migrateArchive(JSON.parse(text));
+        this.archive = parsed;
+        this.save();
+        return parsed;
+    }
 }

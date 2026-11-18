@@ -1,0 +1,750 @@
+// 书信簿 · 数据模型
+// 纯函数，不依赖酒馆，也不碰 DOM —— 所以可以在 Node 里单独测试。
+import { normalizeWhereabouts } from './whereabouts.js';
+import { normalizeEnclosures } from './enclosures.js';
+
+export const SCHEMA_VERSION = 1;
+
+export const KINDS = {
+    letter: '信件',
+    postcard: '明信片',
+    telegram: '电报',
+    note: '便条',
+    invitation: '请柬',
+};
+
+// 便条 / 纸条：没有信封、火漆、邮票，通常当面递过去、或者留在桌上
+export const NOTE_STYLES = {
+    scrap: { label: '纸条', desc: '从本子或信纸上撕下来的一小条，边是毛的', word: '纸条' },
+    sticky: { label: '便签', desc: '方方正正的小便签纸，淡黄色', word: '便签' },
+    card: { label: '小卡片', desc: '硬一点的小卡片，可以夹在书里、塞进门缝', word: '卡片' },
+    folded: { label: '折起来的纸', desc: '一张纸对折两次，捏在手心里能藏住', word: '纸条' },
+    grid: { label: '稿纸', desc: '一页印着蓝色横线的稿纸', word: '稿纸' },
+    custom: { label: '自定义…', desc: '', word: '纸条' },
+};
+// 纸张大小（毫米，竖着放的宽 × 高）；'' = 默认信纸，custom = 自己填一面写多少字
+export const SHEETS = {
+    '': { label: '信纸（默认）' },
+    a4: { label: 'A4', w: 210, h: 297 },
+    a5: { label: 'A5', w: 148, h: 210 },
+    b5: { label: 'B5', w: 176, h: 250 },
+    k16: { label: '十六开', w: 195, h: 270 },
+    k8: { label: '八开', w: 270, h: 390 },
+    usletter: { label: 'Letter（美式信纸）', w: 216, h: 279 },
+    custom: { label: '自定义：一面写多少字…' },
+};
+
+export const isNote = l => l?.kind === 'note';
+// 称呼这张纸：信 / 纸条 / 便签 / 卡片
+export const noteWord = l => {
+    if (!isNote(l)) return '信';
+    const a = l.appearance || {};
+    if (a.noteStyle === 'custom') return String(a.noteWord || '').trim() || '纸条';
+    return (NOTE_STYLES[a.noteStyle] || NOTE_STYLES.scrap).word;
+};
+// 便条长什么样（一句话）
+export const noteLook = l => {
+    const a = l?.appearance || {};
+    if (a.noteStyle === 'custom') return String(a.noteDesc || '').trim();
+    return (NOTE_STYLES[a.noteStyle] || NOTE_STYLES.scrap).desc;
+};
+// 暗号的前缀：信 →【信1】，便条 →【条1】
+export const codePrefix = kind => (kind === 'note' ? '条' : '信');
+
+export const STATUSES = {
+    draft: '草稿',
+    sealed: '已封口',
+    sent: '已寄出',
+    unsent: '写了未寄',
+    lost: '遗失',
+};
+
+export const AUTHENTICITY = {
+    original: '原件',
+    copy: '抄本',
+    transcript: '誊录',
+    translation: '译本',
+    forged: '伪造',
+    fragment: '残片',
+};
+
+// 知情程度，从低到高
+export const LEVELS = ['none', 'exists', 'summary', 'full'];
+export const LEVEL_LABELS = {
+    none: '不知道',
+    exists: '只知道存在',
+    summary: '听人转述',
+    full: '读过/听过原文',
+};
+
+// 每种事件会让当事人获得什么程度的知情。null = 这个事件本身不带来知情
+export const EVENT_TYPES = {
+    sent: { label: '寄出', level: null },
+    received: { label: '收到', level: 'exists' },
+    read: { label: '阅读', level: 'full' },
+    heard: { label: '听人念过', level: 'full' },
+    told: { label: '听人转述', level: 'summary' },
+    aware: { label: '知道存在', level: 'exists' },
+    copied: { label: '抄录', level: 'full' },
+    forwarded: { label: '转寄', level: null },
+    returned: { label: '退回', level: null },
+    lost: { label: '遗失', level: null },
+    written: { label: '写好', level: null },
+    kept: { label: '收起来', level: null },
+    mentioned: { label: '提到', level: null },
+};
+
+// ---------- 小工具 ----------
+
+export function levelRank(level) {
+    const i = LEVELS.indexOf(level);
+    return i < 0 ? 0 : i;
+}
+
+export function maxLevel(a, b) {
+    return levelRank(a) >= levelRank(b) ? a : b;
+}
+
+// ---------- 正文里的格式：**加粗** ~~划掉~~ ++放大++ __下划线__ ----------
+export const MARKS = { '**': 'bold', '~~': 'strike', '++': 'big', '__': 'under' };
+export const MARK_LABELS = { bold: '加粗', strike: '划掉', big: '写得很大', under: '画了线' };
+// 成对出现、里面不以空格开头结尾的才算（免得把 C++、__init__ 之类误认）
+// 前后挨着英文字母 / 数字的不算（x**2**、snake__case 里的记号原样保留）
+export const MARK_RE = /(?<![A-Za-z0-9])(\*\*|~~|\+\+|__)(?=\S)([^\n]*?\S)\1(?![A-Za-z0-9])/;
+
+// 去掉格式标记，只留字
+// 正文的指纹：AI 写的简介跟不跟得上正文
+export function bodyHash(l) { let h = 0; for (const ch of String(l?.body || '')) h = (h * 31 + ch.codePointAt(0)) | 0; return String(h); }
+
+export function stripMarks(text) {
+    let t = String(text ?? '');
+    for (let i = 0; i < 6; i++) {
+        const next = t.replace(new RegExp(MARK_RE.source, 'g'), '$2');
+        if (next === t) break;
+        t = next;
+    }
+    return t;
+}
+
+// 交给 AI 的写法：〔划掉：……〕〔写得很大：……〕
+export function aiText(text) {
+    let t = String(text ?? '');
+    for (let i = 0; i < 6; i++) {
+        const next = t.replace(new RegExp(MARK_RE.source, 'g'), (all, m, inner) => `〔${MARK_LABELS[MARKS[m]]}：${inner}〕`);
+        if (next === t) break;
+        t = next;
+    }
+    return t;
+}
+
+export function parseTags(input) {
+    if (Array.isArray(input)) return input.map(s => String(s).trim()).filter(Boolean);
+    return String(input || '')
+        .split(/[,，、;；#\n]+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+}
+
+export function parseNames(input) {
+    if (Array.isArray(input)) return input.map(s => String(s).trim()).filter(Boolean);
+    return String(input || '')
+        .split(/[,，、;；\n]+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+}
+
+// 日期：支持 1890、1890-11、1890-11-14（也接受 / 和 . 分隔）。
+// 解析不了的（比如“某年秋”）返回 null，视为“时间未知”，不参与时间过滤。
+export function normalizeDate(input) {
+    if (!input) return null;
+    const m = String(input).trim().match(/^(\d{1,4})年?(?:[-/.]?(\d{1,2})月?)?(?:[-/.]?(\d{1,2})日?)?$/);
+    if (!m) return null;
+    const y = m[1].padStart(4, '0');
+    const mo = m[2] ? m[2].padStart(2, '0') : '00';
+    const d = m[3] ? m[3].padStart(2, '0') : '00';
+    return `${y}-${mo}-${d}`;
+}
+
+// 事件日期是否在剧情日期当天或之前。任何一方未知 → 当作已经发生（宽松）。
+export function isOnOrBefore(eventDate, storyDate) {
+    const a = normalizeDate(eventDate);
+    const b = normalizeDate(storyDate);
+    if (!a || !b) return true;
+    return a <= b;
+}
+
+function clone(obj) {
+    return JSON.parse(JSON.stringify(obj));
+}
+
+// ---------- 档案 ----------
+
+export function createArchive() {
+    return {
+        schema: SCHEMA_VERSION,
+        counters: { letter: 0, attachment: 0 },
+        people: [],
+        letters: {},
+        attachments: {},
+        presets: [],
+        styles: [],   // 用户自己存的款式包
+        folders: [],  // 文件夹（按顺序），信的 folder 字段写文件夹名
+    };
+}
+
+// ---------- 文件夹 ----------
+
+export function cleanFolderName(name) {
+    return String(name || '').replace(/[\n\r\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+
+// 所有文件夹（包括信里写了、但清单里没有的），按清单顺序
+export function folderList(archive) {
+    const out = [...(archive.folders || [])];
+    for (const l of Object.values(archive.letters || {})) if (l.folder && !out.includes(l.folder)) out.push(l.folder);
+    return out;
+}
+
+export function lettersInFolder(archive, folder) {
+    return Object.values(archive.letters || {}).filter(l => (folder === '' ? !l.folder : l.folder === folder));
+}
+
+export function addFolder(archive, name) {
+    const n = cleanFolderName(name);
+    if (!n) return '';
+    archive.folders = folderList(archive);
+    if (!archive.folders.includes(n)) archive.folders.push(n);
+    return n;
+}
+
+export function renameFolder(archive, from, to) {
+    const n = cleanFolderName(to);
+    if (!n || n === from) return false;
+    archive.folders = folderList(archive).map(f => (f === from ? n : f)).filter((f, i, a) => a.indexOf(f) === i);
+    for (const l of Object.values(archive.letters)) if (l.folder === from) l.folder = n;
+    return true;
+}
+
+// 删文件夹：里面的信回到“未分类”，信本身不删
+export function removeFolder(archive, name) {
+    archive.folders = folderList(archive).filter(f => f !== name);
+    for (const l of Object.values(archive.letters)) if (l.folder === name) l.folder = '';
+}
+
+// 读入旧档案时补齐缺失字段。以后数据结构升级，也在这里做迁移。
+export function migrateArchive(raw) {
+    const a = raw && typeof raw === 'object' ? raw : {};
+    const base = createArchive();
+    const out = { ...base, ...a };
+    out.counters = { ...base.counters, ...(a.counters || {}) };
+    out.people = Array.isArray(a.people) ? a.people.map(normalizePerson) : [];
+    out.letters = a.letters && typeof a.letters === 'object' ? a.letters : {};
+    out.attachments = a.attachments && typeof a.attachments === 'object' ? a.attachments : {};
+    out.presets = Array.isArray(a.presets) ? a.presets : [];
+    out.styles = (Array.isArray(a.styles) ? a.styles : []).filter(x => x && typeof x === 'object').map((x, i) => (x.id ? x : { ...x, id: `mine-old-${i}` }));
+    out.folders = Array.isArray(a.folders) ? a.folders.map(cleanFolderName).filter(Boolean) : [];
+    for (const id of Object.keys(out.letters)) {
+        out.letters[id] = normalizeLetter(out.letters[id], id);
+    }
+    out.schema = SCHEMA_VERSION;
+    return out;
+}
+
+export function nextId(archive, kind) {
+    archive.counters[kind] = (archive.counters[kind] || 0) + 1;
+    const n = String(archive.counters[kind]).padStart(4, '0');
+    return kind === 'attachment' ? `ATT-${n}` : `LETTER-${n}`;
+}
+
+const HAND_KEYS = ['formal', 'personal', 'elegant', 'casual', 'typewriter'];
+const LEGACY_FONTS = { serif: 'formal', kai: 'personal', hand: 'personal', mono: 'typewriter' };
+
+export function normalizeHandKey(font) {
+    if (HAND_KEYS.includes(font)) return font;
+    return LEGACY_FONTS[font] || '';
+}
+
+function normalizeLevel(v, allowEmpty) {
+    if (allowEmpty && (v === '' || v == null)) return '';
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(0, Math.min(3, Math.round(n))) : (allowEmpty ? '' : 0);
+}
+
+function normalizeAppearance(a = {}) {
+    return {
+        paper: 'cream', ink: 'blueblack', envelope: 'ivory', wax: 'crimson',
+        ...a,
+        font: normalizeHandKey(a.font) || 'personal',        // 字迹：formal 端正 | personal 自然 | elegant 优雅 | casual 随意 | typewriter 打字机
+        orientation: a.orientation === 'landscape' ? 'landscape' : 'portrait', // 竖版对折 | 横版平放
+        flourish: !!a.flourish,                               // 称呼和署名用花体
+        wobble: normalizeLevel(a.wobble, true),               // 笔迹抖动 0-3；'' = 跟随写信人档案
+        wear: normalizeLevel(a.wear, false) || 0,             // 纸张磨损 0 崭新 | 1 轻微 | 2 旧信 | 3 破损
+        inkColor: /^#[0-9a-f]{6}$/i.test(a.inkColor || '') ? a.inkColor : '', // 墨水选“自定义颜色”时用
+        size: ['sm', 'md', 'lg', 'xl'].includes(a.size) ? a.size : 'md',      // 字号：sm 小 | md 标准 | lg 大 | xl 特大
+        cjkSize: ['xs', 'sm', 'md', 'lg'].includes(a.cjkSize) ? a.cjkSize : 'md', // 外文信里夹着的中文的字号
+        noteStyle: NOTE_STYLES[a.noteStyle] ? a.noteStyle : 'scrap', // 便条的样子（只对便条有用）
+        noteDesc: String(a.noteDesc || '').replace(/\s+/g, ' ').trim().slice(0, 120), // 自定义：写在什么上，如“莫奈的名片背面”
+        noteWord: String(a.noteWord || '').replace(/[\s【】]/g, '').slice(0, 8),        // 自定义：剧情里叫它什么，如“名片”
+        noteBase: NOTE_STYLES[a.noteBase] && a.noteBase !== 'custom' ? a.noteBase : 'card', // 自定义：看起来像哪种纸
+        duplex: a.duplex === true || a.duplex === 'true' || a.duplex === 'on', // 正反面都写
+        sheet: SHEETS[a.sheet] ? a.sheet : '',   // 纸张大小（见 SHEETS）
+        sheetCap: Math.max(0, Math.min(20000, Math.round(Number(a.sheetCap) || 0))), // 自定义：一面大约写多少字（外文信按词）
+        // 每一项可以是：选好的样式 | follow 空着（跟随文中，不告诉 AI，由剧情决定）| custom 自定义（自己写描述，纸 / 信封 / 火漆 / 墨水还能选颜色）
+        mode: cleanMap(a.mode, v => (v === 'follow' || v === 'custom' ? v : null)),
+        custom: cleanMap(a.custom, v => String(v || '').trim().slice(0, 200) || null),
+        customColor: cleanMap(a.customColor, v => (/^#[0-9a-f]{6}$/i.test(v || '') ? v : null)),
+    };
+}
+
+export const APPEARANCE_FIELDS = ['orientation', 'paper', 'wear', 'font', 'size', 'ink', 'envelope', 'wax'];
+
+function cleanMap(m, f) {
+    const out = {};
+    if (m && typeof m === 'object') for (const k of APPEARANCE_FIELDS) { const v = f(m[k]); if (v != null) out[k] = v; }
+    return out;
+}
+
+// 这一项是“空着跟随文中”/“自定义”/普通
+export function lookMode(a, key) {
+    return a?.mode?.[key] || '';
+}
+
+export function normalizeLetter(l, id) {
+    const now = new Date().toISOString();
+    return {
+        id: l.id || id,
+        kind: KINDS[l.kind] ? l.kind : 'letter',
+        status: STATUSES[l.status] ? l.status : 'draft',
+        authenticity: AUTHENTICITY[l.authenticity] ? l.authenticity : 'original',
+        title: l.title || '',
+        author: l.author || '',
+        signature: l.signature || '',
+        recipients: parseNames(l.recipients),
+        writtenAt: l.writtenAt || '',
+        placeFrom: l.placeFrom || '',
+        placeTo: l.placeTo || '',
+        language: l.language || '',
+        tags: parseTags(l.tags),
+        folder: cleanFolderName(l.folder),   // 放在哪个文件夹（空 = 未分类）
+        scope: String(l.scope || ''),        // 属于哪张角色卡（char:头像文件名 / group:群聊编号；空 = 还没归属）
+        scopeName: String(l.scopeName || ''), // 那张角色卡的名字（显示用）
+        body: typeof l.body === 'string' ? l.body : '',
+        shell: !!l.shell && !String(l.body || '').trim(),          // 空壳信：剧情里已经有了，正文还没写
+        code: normalizeCode(l.code),                              // 暗号：用户消息里出现它，这一轮就把信交给 AI
+        segments: Array.isArray(l.segments) ? l.segments.map(normalizeSegment) : [],
+        events: Array.isArray(l.events) ? l.events.map(normalizeEvent) : [],
+        attachments: Array.isArray(l.attachments) ? l.attachments : [],
+        enclosures: normalizeEnclosures(l.enclosures, l.attachments), // 随信附上的东西：钱、礼物、速写……
+        appearance: normalizeAppearance(l.appearance),
+        links: { works: [], ...(l.links || {}) },
+        inReplyTo: l.inReplyTo || '',   // 回复的是哪封信
+        importance: IMPORTANCE[l.importance] && l.importance ? l.importance : '', // 这封信有多重要（空 = 让 AI 按每个读信人看着办）
+        autoFrom: l.autoFrom && typeof l.autoFrom === 'object' && Number.isInteger(l.autoFrom.mes) ? { chatId: String(l.autoFrom.chatId || ''), mes: l.autoFrom.mes, swipe: Number.isInteger(l.autoFrom.swipe) ? l.autoFrom.swipe : 0 } : null, // 从哪条回复里自动记下的（换回复 / 删消息时撤掉；你改过就清空）
+        envNote: String(l.envNote || '').replace(/\s*\n\s*/g, ' ').trim().slice(0, 120), // 信封上写的一句话（拆信之前就看得到），如“请在确认四下无人时打开”
+        blurb: String(l.blurb || '').replace(/\s+/g, ' ').trim().slice(0, 80), // 一句话简介：剧情里怎么称呼这封信（如“3月17日说想离开圣雷米的那封信”）
+        blurbAuto: !!l.blurbAuto,       // 简介是 AI 写的（你改过就变成 false）
+        blurbHash: String(l.blurbHash || ''), // AI 写简介时正文的样子（正文改了就重写）
+        replied: ['yes', 'no', 'none'].includes(l.replied) ? l.replied : '', // 有没有收到回信：你自己定的（空 = 按信件推算）
+        aiDraft: !!l.aiDraft,           // 是否是 AI 代写的回信（用户确认前）
+        openedAt: l.openedAt || '',     // 收信人第一次拆开的时间（用于只播放一次拆信动画）
+        delivery: l.delivery && typeof l.delivery === 'object' ? l.delivery : null, // 在途信件的送达信息
+        autoDelivery: Array.isArray(l.autoDelivery) ? l.autoDelivery.slice(-20) : [], // AI 从剧情里改寄送状态之前的样子（换回复、删消息时退回）
+        source: l.source && typeof l.source === 'object' ? l.source : null,         // 从聊天记录导入时的出处
+        translations: l.translations && typeof l.translations === 'object' ? l.translations : {}, // 阅读用的译文缓存
+        memories: Array.isArray(l.memories) ? l.memories.map(normalizeMemory).filter(m => m.person && m.text) : [], // 读过的人记得什么
+        recallKeys: parseTags(l.recallKeys),
+        codeFloors: Array.isArray(l.codeFloors) ? l.codeFloors.filter(x => x && Number.isInteger(x.mes)).map(x => ({ chatId: String(x.chatId || ''), mes: x.mes })).slice(-50) : [], // 暗号在哪几层出现过
+        whereabouts: normalizeWhereabouts(l.whereabouts), // 信现在在谁手里（手动 / 剧情里记下的；没有就按寄送状态推算）  // 世界书里“想起这封信”的额外关键词
+        notes: l.notes || '',
+        createdAt: l.createdAt || now,
+        updatedAt: l.updatedAt || now,
+    };
+}
+
+// 信的分量：决定读信人记得多少、反应多大
+export const IMPORTANCE = {
+    '': '让 AI 看着办',
+    light: '平常（随手写的近况）',
+    normal: '要紧',
+    high: '非常重要（会改变关系或处境）',
+};
+// 每个读信人心里的分量 1-3
+export const WEIGHT_LABELS = { 1: '没太往心里去', 2: '记在心上', 3: '刻骨铭心' };
+// 从信里新知道的事：哪一类
+export const LEARN_KINDS = ['家庭', '过去', '身体', '处境', '感情', '秘密', '打算', '关系', '其他'];
+
+export function normalizeLearned(arr) {
+    return (Array.isArray(arr) ? arr : [])
+        .filter(x => x && typeof x === 'object' && String(x.fact || '').trim())
+        .map(x => ({
+            about: String(x.about || '').trim().slice(0, 40),
+            kind: LEARN_KINDS.includes(String(x.kind || '').trim()) ? String(x.kind).trim() : '其他',
+            fact: String(x.fact).trim().slice(0, 80),
+        }))
+        .slice(0, 12);
+}
+
+const normWeight = w => ([1, 2, 3].includes(Number(w)) ? Number(w) : null);
+
+export function normalizeMemory(m = {}) {
+    return {
+        person: String(m.person || '').trim(),
+        text: String(m.text || '').trim(),
+        updatedAt: m.updatedAt || new Date().toISOString(),
+        wiUid: m.wiUid ?? null,      // 世界书条目编号
+        wiBook: m.wiBook || '',      // 写进了哪本世界书
+        gist: String(m.gist || '').trim().slice(0, 120), // 一句话：这个人记得这封信说了什么（用在“来信一览”里）
+        chatId: m.chatId || '',      // 在哪个聊天里读的
+        fromMes: Number.isInteger(m.fromMes) ? m.fromMes : null, // 由哪一层整理出来的（换回复、删消息时撤回）
+        fromSwipe: Number.isInteger(m.fromSwipe) ? m.fromSwipe : null, // 那一层的第几个回复
+        prev: m.prev && typeof m.prev === 'object' ? { text: String(m.prev.text || ''), gist: String(m.prev.gist || ''), fromMes: Number.isInteger(m.prev.fromMes) ? m.prev.fromMes : null, fromSwipe: Number.isInteger(m.prev.fromSwipe) ? m.prev.fromSwipe : null, weight: normWeight(m.prev.weight), learned: normalizeLearned(m.prev.learned) } : null, // 这次整理之前的样子
+        weight: normWeight(m.weight),        // 这封信在这个人心里的分量 1-3
+        learned: normalizeLearned(m.learned), // 这个人从信里新知道的事（关于写信人 / 别人）
+        auto: m.auto !== false,      // AI 整理的（false = 用户手写或改过）
+    };
+}
+
+function normalizeSegment(s) {
+    return {
+        id: s.id,
+        text: s.text || '',
+        tags: parseTags(s.tags),
+        aiTags: parseTags(s.aiTags),
+        summary: s.summary || '',
+        references: Array.isArray(s.references) ? s.references : [],
+    };
+}
+
+function normalizeEvent(e) {
+    return {
+        id: e.id,
+        type: EVENT_TYPES[e.type] ? e.type : 'read',
+        who: e.who || '',
+        date: e.date || '',
+        segments: Array.isArray(e.segments) && e.segments.length ? e.segments : null, // null = 整封
+        to: e.to || '',
+        note: e.note || '',
+        place: e.place || '',                                  // 在哪（剧情里看得出来时）
+        mes: Number.isInteger(e.mes) ? e.mes : null,           // 第几层（剧情里记下的）
+        auto: !!e.auto,                                        // AI 从剧情里记下的（换回复、删消息时撤回）
+        chatId: e.chatId || '',                                // 在哪个聊天里记下的
+        src: Number.isInteger(e.src) ? e.src : null,           // 由哪一层的回复整理出来的（换回复、删消息按这个撤回）
+        swipe: Number.isInteger(e.swipe) ? e.swipe : null,     // 那一层的第几个回复
+    };
+}
+
+// ---------- 暗号 ----------
+
+// 没写括号的，自动加上【】：“信1” → “【信1】”
+export function normalizeCode(code) {
+    const c = String(code || '').trim();
+    if (!c) return '';
+    return /^[【\[〔「『《<（({]/.test(c) ? c : `【${c}】`;
+}
+
+// 下一个没被用过的暗号：【信1】【信2】……
+// scope：只看同一张角色卡的信（不同角色卡可以各自从【信1】编起）
+// 暗号拆成“前缀 + 编号”：【电学4】→ { prefix: '电学', n: 4 }
+export function codeSeries(code) {
+    const m = String(code || '').trim().match(/^【(.*?)(\d+)】$/);
+    return m ? { prefix: m[1], n: Number(m[2]) } : null;
+}
+
+// 这两个人之间（谁写给谁都算）上一封信用的暗号前缀；没有就是 null
+export function pairPrefix(archive, scope = null, kind = 'letter', { author = '', recipients = [] } = {}) {
+    const rs = (recipients || []).map(r => String(r || '').trim()).filter(Boolean);
+    if (!String(author || '').trim() || !rs.length) return null;
+    const same = (a, b) => sameName(archive, a, b);
+    const inPair = l => (same(l.author, author) && (l.recipients || []).some(r => rs.some(x => same(r, x))))
+        || ((l.recipients || []).some(r => same(r, author)) && rs.some(x => same(l.author, x)));
+    const last = Object.values(archive.letters || {})
+        .filter(l => (scope == null || (l.scope || '') === scope) && (l.kind === 'note') === (kind === 'note') && codeSeries(l.code) && inPair(l))
+        .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+    return last ? codeSeries(last.code).prefix : null;
+}
+
+// 同一个写信人写给同一个收信人的上一封信在哪个文件夹：新信也放那儿。
+// 先找同一方向（A 写给 B）；没有的话再看反方向（B 写给 A，比如回信）。同类（信 / 纸条）优先。
+// 返回文件夹名；上一封没放文件夹、或者两人没通过信，返回 ''。
+export function pairFolder(archive, scope = null, kind = 'letter', { author = '', recipients = [] } = {}, { skipId = '' } = {}) {
+    const rs = (recipients || []).map(r => String(r || '').trim()).filter(Boolean);
+    if (!String(author || '').trim() || !rs.length) return '';
+    const same = (a, b) => sameName(archive, a, b);
+    const pool = Object.values(archive.letters || {}).filter(l => l.id !== skipId && (scope == null || (l.scope || '') === scope));
+    const fwd = l => same(l.author, author) && (l.recipients || []).some(r => rs.some(x => same(r, x)));
+    const back = l => (l.recipients || []).some(r => same(r, author)) && rs.some(x => same(l.author, x));
+    const isN = l => (l.kind === 'note') === (kind === 'note');
+    const newest = list => list.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')) || String(b.id).localeCompare(String(a.id), undefined, { numeric: true }))[0];
+    for (const test of [fwd, back]) {
+        const hit = newest(pool.filter(l => test(l) && isN(l))) || newest(pool.filter(test));
+        if (hit) return hit.folder || '';
+    }
+    return '';
+}
+
+// 下一个暗号。给了写信人和收信人（pair）：延续这两个人上一次用的那一套（【电学4】之后是【电学5】）；
+// 没有往来过就用默认的【信N】/【条N】
+export function nextCode(archive, scope = null, kind = 'letter', pair = null) {
+    const inScope = Object.values(archive.letters || {}).filter(l => scope == null || (l.scope || '') === scope);
+    const used = new Set(inScope.map(l => l.code));
+    const own = pair ? pairPrefix(archive, scope, kind, pair) : null;
+    if (own != null) {
+        // 接在这一套里最大的编号后面
+        const max = Math.max(0, ...inScope.map(l => codeSeries(l.code)).filter(c => c && c.prefix === own).map(c => c.n));
+        for (let n = max + 1; ; n++) if (!used.has(`【${own}${n}】`)) return `【${own}${n}】`;
+    }
+    const p = codePrefix(kind);
+    for (let n = 1; ; n++) if (!used.has(`【${p}${n}】`)) return `【${p}${n}】`;
+}
+
+// 比对暗号时宽松一点：各种括号都当成【】，全角数字字母当成半角，忽略空格
+export function looseCode(text) {
+    return String(text || '')
+        .replace(/[\uff01-\uff5e]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+        .replace(/[\[〖〔［\{（(「『《<]/g, '【')
+        .replace(/[\]〗〕］\}）)」』》>]/g, '】')
+        .replace(/\s+/g, '');
+}
+
+// 一段文字里出现了哪些信的暗号
+export function lettersByCode(archive, text) {
+    const t = looseCode(String(text || '').replace(/【信件 [\s\S]*?【信件完】/g, m => m.slice(0, m.indexOf('｜') + 1)));
+    if (!t) return [];
+    return Object.values(archive.letters).filter(l => l.code && t.includes(looseCode(l.code)));
+}
+
+// 文字里写了像暗号的东西（【……】），但档案里没有对应的信
+export function unknownCodes(archive, text) {
+    // 已经放进消息里的信（【信件 ……】……【信件完】）不算
+    const t = looseCode(String(text || '').replace(/【信件 [\s\S]*?【信件完】/g, ''));
+    const known = new Set(Object.values(archive.letters).map(l => looseCode(l.code)).filter(Boolean));
+    return [...new Set((t.match(/【[^【】]{1,12}】/g) || []))].filter(c => !known.has(c) && /^【[信条]/.test(c));
+}
+
+// 旧档案里没有暗号的信，按编号顺序补上
+export function ensureCodes(archive) {
+    let changed = false;
+    for (const l of Object.values(archive.letters).sort((a, b) => a.id.localeCompare(b.id))) {
+        if (!l.code) { l.code = nextCode(archive, l.scope || '', l.kind, { author: l.author, recipients: l.recipients }); changed = true; }
+    }
+    return changed;
+}
+
+// 转交人不能是写信人自己、也不能是收信人 / 读信人（“已送到玛丽亚（经玛丽亚转交）”这种）。
+// 是的话就当没有转交人：
+//   · 转交人 = 收信人 / 读信人，信“在转交人那里”→ 其实已经到收信人手里了
+//   · 转交人 = 写信人，信“在转交人那里”→ 其实还没送出去，算在路上
+// 读信人写成了写信人自己的，也改回收信人。改了就返回 true。
+export function fixSelfVia(archive, letter) {
+    const d = letter?.delivery;
+    if (!d) return false;
+    const same = (a, b) => !!String(a || '').trim() && !!String(b || '').trim() && sameName(archive, a, b);
+    let changed = false;
+    if (d.reader && same(d.reader, letter.author) && !(letter.recipients || []).some(r => same(r, letter.author))) {
+        d.reader = letter.recipients?.[0] || '';
+        changed = true;
+    }
+    const via = d.via;
+    if (!via) return changed;
+    // 没写收信人的“信”（多半是文章稿、手稿这类放在书信簿里的东西）、却记了“转交人”：
+    // 那是 AI 把剧情里“某某拿到了稿子 / 读了文章”错记成了转交。把这段寄送记录清掉，不去猜收信人。
+    if (!(letter.recipients || []).some(r => String(r || '').trim())) {
+        letter.delivery = null;
+        return true;
+    }
+    const isAuthor = same(via, letter.author);
+    const isReader = same(via, d.reader) || (letter.recipients || []).some(r => same(r, via));
+    if (!isAuthor && !isReader) return changed;
+    const atVia = ['atVia', 'held', 'withheld'].includes(d.status);
+    const viaArrived = d.viaArrivedAt || '';
+    for (const k of ['via', 'viaNote', 'viaDeadline', 'viaArrivedAt', 'openly', 'tampered']) delete d[k];
+    if (d.stage) d.stage = '';
+    if (atVia) {
+        if (isReader) { d.status = 'viewed'; d.arrivedAt = d.arrivedAt || viaArrived; d.reader = d.reader || via; }
+        else d.status = 'transit';
+    }
+    return true;
+}
+
+export function fixSelfViaAll(archive) {
+    let changed = false;
+    for (const l of Object.values(archive.letters || {})) if (fixSelfVia(archive, l)) changed = true;
+    return changed;
+}
+
+export function createLetter(archive, partial = {}) {
+    const id = nextId(archive, 'letter');
+    const pair = { author: partial.author, recipients: partial.recipients };
+    // 没指定文件夹：跟这两人上一封信放在一起
+    const folder = partial.folder === undefined ? pairFolder(archive, partial.scope ?? null, partial.kind, pair) : partial.folder;
+    const letter = normalizeLetter({ ...partial, folder, id, code: partial.code || nextCode(archive, partial.scope ?? null, partial.kind, pair) }, id);
+    resegment(letter);
+    archive.letters[id] = letter;
+    return letter;
+}
+
+// ---------- 分段 ----------
+
+// 空行分段。段内的单个换行保留。原文 body 永远是唯一的事实来源，段落由它推出。
+export function splitBody(body) {
+    return String(body || '')
+        .replace(/\r\n?/g, '\n')
+        .split(/\n[ \t　]*\n/)
+        .map(s => s.replace(/^\n+|\n+$/g, ''))
+        .filter(s => s.trim().length > 0);
+}
+
+// 重新分段，同时尽量保住旧段落的 ID、关键词、大意和引用：
+// 1) 文字完全相同的段落直接继承；2) 剩下的按位置继承（改了错别字的段落仍然保住关键词）。
+export function resegment(letter) {
+    const texts = splitBody(letter.body);
+    const old = letter.segments || [];
+    const used = new Set();
+    const result = new Array(texts.length).fill(null);
+
+    texts.forEach((t, i) => {
+        const j = old.findIndex((s, k) => !used.has(k) && s.text === t);
+        if (j >= 0) {
+            used.add(j);
+            result[i] = { ...old[j], text: t };
+        }
+    });
+    texts.forEach((t, i) => {
+        if (result[i]) return;
+        if (i < old.length && !used.has(i)) {
+            used.add(i);
+            result[i] = { ...old[i], text: t };
+        }
+    });
+
+    let maxN = 0;
+    for (const s of old) {
+        const n = parseInt(String(s.id || '').replace(/\D/g, ''), 10);
+        if (n > maxN) maxN = n;
+    }
+    texts.forEach((t, i) => {
+        if (!result[i]) {
+            maxN += 1;
+            result[i] = normalizeSegment({ id: `S${maxN}`, text: t });
+        }
+    });
+
+    letter.segments = result;
+    // 事件里引用了已经不存在的段落 → 去掉这些引用
+    const ids = new Set(result.map(s => s.id));
+    for (const e of letter.events) {
+        if (e.segments) {
+            e.segments = e.segments.filter(id => ids.has(id));
+            if (!e.segments.length) e.segments = null;
+        }
+    }
+    return letter;
+}
+
+export function segmentPosition(letter, segId) {
+    const i = letter.segments.findIndex(s => s.id === segId);
+    return i < 0 ? null : i + 1;
+}
+
+// ---------- 人物与别名 ----------
+
+// 人物档案：除了名字和别名，还有“文风档案”，用于生成更像本人的回信
+export function normalizePerson(p = {}) {
+    return {
+        name: p.name || '',
+        aliases: parseNames(p.aliases),
+        historical: !!p.historical,        // 是否真实历史人物
+        styleSource: p.styleSource || '',  // 参考的书信集，如《梵高书信》
+        styleNotes: p.styleNotes || '',    // 文风描述
+        styleSamples: Array.isArray(p.styleSamples) ? p.styleSamples.filter(s => String(s).trim()) : splitSamples(p.styleSamples),
+        language: p.language || '',
+        hand: normalizeHandKey(p.hand),     // 此人的字迹，新信件默认用它
+        wobble: normalizeLevel(p.wobble, true), // 此人笔迹的抖动程度 0-3；'' = 按字迹默认
+        style: typeof p.style === 'string' ? p.style.trim().slice(0, 80) : '', // 绑定的款式（款式包 id）：此人写的新信默认用这一整套外观
+    };
+}
+
+// 文风样本：多段之间用单独一行 --- 隔开
+export function splitSamples(text) {
+    return String(text || '').split(/\n\s*-{3,}\s*\n/).map(s => s.trim()).filter(Boolean);
+}
+
+export function findPerson(archive, name) {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) return null;
+    return (archive.people || []).find(p => [p.name, ...(p.aliases || [])].some(n => String(n || '').trim().toLowerCase() === key)) || null;
+}
+
+export function sameName(archive, a, b) {
+    return nameSet(archive, a).has(String(b || '').trim().toLowerCase());
+}
+
+// 把一个名字扩展成“这个人所有的叫法”，统一小写，用来比对。
+export function nameSet(archive, name) {
+    const set = new Set();
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) return set;
+    set.add(key);
+    for (const p of archive.people || []) {
+        const all = [p.name, ...(p.aliases || [])].map(s => String(s || '').trim().toLowerCase()).filter(Boolean);
+        if (all.includes(key)) all.forEach(n => set.add(n));
+    }
+    return set;
+}
+
+export function isPerson(set, name) {
+    return set.has(String(name || '').trim().toLowerCase());
+}
+
+// ---------- 知情推算 ----------
+
+// 某人在某个剧情日期，对这封信知道多少。
+// 返回 { letterLevel, segLevels: {segId: level}, exists: bool }
+// exists=false 表示信在那个日期还没写成。
+export function knowledgeOf(letter, who, storyDate) {
+    const segLevels = {};
+    letter.segments.forEach(s => { segLevels[s.id] = 'none'; });
+    const result = { letterLevel: 'none', segLevels, exists: true };
+
+    if (!isOnOrBefore(letter.writtenAt, storyDate)) {
+        result.exists = false;
+        return result;
+    }
+
+    const grant = (level, segIds) => {
+        if (!level) return;
+        if (level === 'exists') {
+            result.letterLevel = maxLevel(result.letterLevel, 'exists');
+            return;
+        }
+        const targets = segIds && segIds.length ? segIds : letter.segments.map(s => s.id);
+        for (const id of targets) {
+            if (id in segLevels) segLevels[id] = maxLevel(segLevels[id], level);
+        }
+        result.letterLevel = maxLevel(result.letterLevel, level);
+    };
+
+    if (isPerson(who, letter.author)) grant('full', null);
+
+    for (const e of letter.events) {
+        if (!isPerson(who, e.who)) continue;
+        if (!isOnOrBefore(e.date, storyDate)) continue;
+        grant(EVENT_TYPES[e.type]?.level, e.segments);
+    }
+    return result;
+}
+
+// 列出所有“和这封信有关系”的人，以及他们现在的知情程度（给编辑器里的一览表用）
+export function knowledgeTable(archive, letter, storyDate) {
+    const names = new Map();
+    const add = n => { const k = String(n || '').trim(); if (k && !names.has(k.toLowerCase())) names.set(k.toLowerCase(), k); };
+    add(letter.author);
+    letter.recipients.forEach(add);
+    letter.events.forEach(e => add(e.who));
+    return [...names.values()].map(name => {
+        const k = knowledgeOf(letter, nameSet(archive, name), storyDate);
+        return { name, ...k };
+    });
+}
+
+export { clone };
